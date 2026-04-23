@@ -1,7 +1,7 @@
 
 # CuRast: Cuda-Based Software Rasterization for Billions of Triangles
 
-[\[Paper\]](./docs/CuRast_arxiv.pdf)
+<a href="./docs/CuRast_arxiv.pdf" target="_blank" rel="noopener noreferrer">[Paper]</a>
 
 __About__: [Nanite](https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf) has demonstrated that small triangles can be rasterized more efficiently with custom compute shaders than with the fixed-function hardware pipeline. Building on this insight, we explore how far this advantage can be pushed for real-time rendering of massive triangle datasets without relying on precomputed LODs or acceleration structures. 
 
