@@ -27,13 +27,13 @@ __Future Work__: To make it suitable for games, we intend to (1) optimize handli
 </tr>
 <tr>
 	<td>
-		<a href="https://github.com/nvpro-samples/vk_lod_clusters/blob/main/README.md#zorah-demo-scene">Zorah</a> rendered in 67.3ms into a 3840x2160 framebuffer. 13.5 billion triangles in view frustum.
+		<a href="https://github.com/nvpro-samples/vk_lod_clusters/blob/main/README.md#zorah-demo-scene">Zorah</a> rendered in 67.3ms into a 3840x2160 framebuffer (RTX 5090). 13.5 billion triangles in view frustum.
 	</td>
 	<td>
-		Venice (400M triangles) rendered in 7.98ms (1920x1080p).
+		Venice (400M triangles) rendered in 7.98ms (1920x1080p, RTX 5090).
 	</td>
 	<td>
-		3000 instances with 1M triangles each, rendered in 9.8ms (1920x1080p).
+		3000 instances with 1M triangles each, rendered in 9.8ms (1920x1080p, RTX 5090).
 	</td>
 </tr>
 </table>
