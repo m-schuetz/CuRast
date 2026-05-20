@@ -21,6 +21,7 @@ struct TextureManager{
 	static inline Texture* create(){
 
 		Texture* texture = &textures[numTextures];
+		*texture = {0};
 		texture->handle = numTextures;
 		numTextures++;
 

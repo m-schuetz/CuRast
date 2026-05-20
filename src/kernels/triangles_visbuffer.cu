@@ -82,6 +82,167 @@ vec4 getVertex(const CMesh& mesh, uint32_t vertexIndex){
 };
 
 template<IndexFetch INDEXING, Compression COMPRESSION>
+uint32_t getResolvedVertexIndex(const CMesh& mesh, uint32_t vertexIndex){
+
+	if constexpr(INDEXING == IndexFetch::INDEXBUFFER && COMPRESSION == Compression::UNCOMPRESSED){
+
+		uint32_t resolvedIndex;
+		if(mesh.indices){
+			resolvedIndex = mesh.indices[vertexIndex];
+		}else{
+			resolvedIndex = vertexIndex;
+		}
+
+		return resolvedIndex;
+	}else if constexpr(INDEXING == IndexFetch::INDEXBUFFER && COMPRESSION == Compression::IX_PU16){
+		return BitEdit::readU32(mesh.indices, mesh.bitsPerIndex * vertexIndex, mesh.bitsPerIndex) + mesh.index_min;
+	}else if constexpr(INDEXING == IndexFetch::DIRECT){
+		return vertexIndex;
+	}
+};
+
+__device__
+uint32_t sampleColor_nearest(
+	uint32_t* textureData,
+	int width,
+	int height,
+	vec2 uv
+){
+
+	if(textureData == nullptr) return 0;
+	// return 0xff660066;
+	uv.x = uv.x - floor(uv.x);
+	uv.y = uv.y - floor(uv.y);
+	int tx = int(uv.x * float(width) + 0.5f) % width;
+	int ty = int(uv.y * float(height) + 0.5f) % height;
+	int texelID = tx + ty * width;
+	texelID = clamp(texelID, 0, width * height - 1);
+
+	uint32_t color = 0;
+	color = textureData[texelID];
+
+	return color;
+}
+
+__device__
+uint32_t sampleColor_linear(
+	uint32_t* textureData,
+	int width,
+	int height,
+	vec2 uv
+){
+
+	if(textureData == nullptr) return 0;
+
+	uint32_t color = 0xff000000;
+	uint8_t* rgba = (uint8_t*)&color;
+
+	// Only for ply with textures
+	// if(uv.x > 1.0f) return 0;
+	// if(uv.y > 1.0f) return 0;
+	// uv.y = 1.0f - uv.y;
+
+	float ftx = (uv.x - floor(uv.x)) * float(width);
+	float fty = (uv.y - floor(uv.y)) * float(height);
+
+	auto getTexel = [&](float ftx, float fty) -> vec4 {
+		int tx = fmodf(ftx, float(width));
+		int ty = fmodf(fty, float(height));
+		int texelID = tx + ty * width;
+		texelID = clamp(texelID, 0, width * height - 1);
+
+		uint32_t texel = textureData[texelID];
+		uint8_t* rgba = (uint8_t*)&texel;
+
+		return vec4{rgba[0], rgba[1], rgba[2], rgba[3]};
+	};
+
+	vec4 t00 = getTexel(ftx - 0.5f, fty - 0.5f);
+	vec4 t01 = getTexel(ftx - 0.5f, fty + 0.5f);
+	vec4 t10 = getTexel(ftx + 0.5f, fty - 0.5f);
+	vec4 t11 = getTexel(ftx + 0.5f, fty + 0.5f);
+
+	float wx = fmodf(ftx + 0.5f, 1.0f);
+	float wy = fmodf(fty + 0.5f, 1.0f);
+
+	vec4 interpolated =
+		(1.0f - wx) * (1.0f - wy) * t00 +
+		wx * (1.0f - wy) * t10 +
+		(1.0f - wx) * wy * t01 +
+		wx * wy * t11;
+
+	rgba[0] = interpolated.r;
+	rgba[1] = interpolated.g;
+	rgba[2] = interpolated.b;
+	rgba[3] = interpolated.a;
+
+
+	return color;
+}
+
+__device__
+float sampleAlpha_nearest(
+	uint64_t* alphamask,
+	int width,
+	int height,
+	vec2 uv
+){
+
+	if(alphamask == nullptr) return 1.0f;
+
+	uv.x = uv.x - floor(uv.x);
+	uv.y = uv.y - floor(uv.y);
+	int tx = int(uv.x * float(width) + 0.5f) % width;
+	int ty = int(uv.y * float(height) + 0.5f) % height;
+	int texelID = tx + ty * width;
+	texelID = clamp(texelID, 0, width * height - 1);
+	
+	bool alpha = BitEdit::get(alphamask, texelID);
+	float result = alpha ? 1.0f : 0.0f;
+
+	return result;
+}
+
+__device__
+float sampleAlpha_linear(
+	uint64_t* alphamask,
+	int width,
+	int height,
+	vec2 uv
+){
+
+	if(alphamask == nullptr) return 1.0f;
+
+	float ftx = (uv.x - floor(uv.x)) * float(width);
+	float fty = (uv.y - floor(uv.y)) * float(height);
+	
+	auto getTexel = [&](float ftx, float fty) -> float {
+		int tx = fmodf(ftx, float(width));
+		int ty = fmodf(fty, float(height));
+		int texelID = tx + ty * width;
+		texelID = clamp(texelID, 0, width * height - 1);
+
+		return BitEdit::get(alphamask, texelID) ? 1.0f : 0.0f;
+	};
+
+	float t00 = getTexel(ftx - 0.5f, fty - 0.5f);
+	float t01 = getTexel(ftx - 0.5f, fty + 0.5f);
+	float t10 = getTexel(ftx + 0.5f, fty - 0.5f);
+	float t11 = getTexel(ftx + 0.5f, fty + 0.5f);
+
+	float wx = fmodf(ftx + 0.5f, 1.0f);
+	float wy = fmodf(fty + 0.5f, 1.0f);
+
+	float interpolated =
+		(1.0f - wx) * (1.0f - wy) * t00 +
+		wx * (1.0f - wy) * t10 +
+		(1.0f - wx) * wy * t01 +
+		wx * wy * t11;
+
+	return interpolated;
+}
+
+template<IndexFetch INDEXING, Compression COMPRESSION>
 void rasterize(
 	const RasterArgs args,
 	const CMesh& sh_mesh,
@@ -247,6 +408,21 @@ void rasterize(
 		float inv_z_a = __fdividef(1.0f, a_ndc.z);
 		float inv_z_b = __fdividef(1.0f, b_ndc.z);
 		float inv_z_c = __fdividef(1.0f, c_ndc.z);
+		
+		uint32_t i_a;
+		uint32_t i_b;
+		uint32_t i_c;
+		vec2 uv_over_z_a;
+		vec2 uv_over_z_b;
+		vec2 uv_over_z_c;
+		if(sh_mesh.texture.alphamask){
+			i_a = getResolvedVertexIndex<INDEXING, COMPRESSION>(sh_mesh, 3 * triangleIndex + 0);
+			i_b = getResolvedVertexIndex<INDEXING, COMPRESSION>(sh_mesh, 3 * triangleIndex + 1);
+			i_c = getResolvedVertexIndex<INDEXING, COMPRESSION>(sh_mesh, 3 * triangleIndex + 2);
+			uv_over_z_a = sh_mesh.uvs[i_a] * inv_z_a;
+			uv_over_z_b = sh_mesh.uvs[i_b] * inv_z_b;
+			uv_over_z_c = sh_mesh.uvs[i_c] * inv_z_c;
+		}
 
 		// Precompute barycentric steps: How do s and t change as we move to the next pixel along the x or y axis
 		float ds_dx =  v_ac.y * factor;
@@ -282,17 +458,32 @@ void rasterize(
 					if (pixelID < numPixels){
 						// Perspective-correct interpolation using precomputed inverses
 						float inv_depth = v * inv_z_a + s * inv_z_b + t * inv_z_c;
-						
-						// Fast hardware approximation for final division
-						float depth = __fdividef(1.0f, inv_depth); 
-						// float depth = 1.0f / inv_depth; 
 
-						uint64_t pixel = pack_pixel(depth, 
-							sh_mesh.cummulativeTriangleCount + triangleIndex + instanceIndex * sh_mesh.numTriangles
-						);
-						atomicMin(&args.target.framebuffer[pixelID], pixel);
-						if constexpr (ENABLE_FRAGCOUNTING){
-							atomicAdd(&args.state->dbg_fragcount, 1);
+						// Fast hardware approximation for final division
+						float depth = __fdividef(1.0f, inv_depth);
+						// float depth = 1.0f / inv_depth;
+
+						vec2 uv = (v * uv_over_z_a + s * uv_over_z_b + t * uv_over_z_c) * depth;
+						// Using nearest here because we're highly susceptible to aliasing for small triangles anyway.
+						// Perhaps we should be sampling the corresponding mip map level?
+						// uint32_t C = sampleColor_nearest(sh_mesh.texture.data, sh_mesh.texture.width, sh_mesh.texture.height, uv);
+						// uint32_t alpha = C >> 24;
+						float alpha = 1.0f;
+						
+						if(sh_mesh.texture.alphamask){
+							alpha = sampleAlpha_nearest(sh_mesh.texture.alphamask, sh_mesh.texture.width, sh_mesh.texture.height, uv);
+						}
+
+						if(alpha > 0.5f){
+							uint64_t pixel = pack_pixel(depth,
+								sh_mesh.cummulativeTriangleCount + triangleIndex + instanceIndex * sh_mesh.numTriangles
+							);
+							
+							atomicMin(&args.target.framebuffer[pixelID], pixel);
+							
+							if constexpr (ENABLE_FRAGCOUNTING){
+								atomicAdd(&args.state->dbg_fragcount, 1);
+							}
 						}
 					}
 				}
@@ -393,18 +584,6 @@ void stage1_drawSmallTriangles(RasterArgs& args){
 		vec4 a_object = getVertex<INDEXING, COMPRESSION>(sh_mesh, 3 * triangleIndex + 0);
 		vec4 b_object = getVertex<INDEXING, COMPRESSION>(sh_mesh, 3 * triangleIndex + 1);
 		vec4 c_object = getVertex<INDEXING, COMPRESSION>(sh_mesh, 3 * triangleIndex + 2);
-
-		// if(triangleIndex == 200'000'000){
-
-		// 	// int resolvedIndex = sh_mesh.indices[3 * triangleIndex + 0];
-		// 	// vec3 pos = sh_mesh.positions[resolvedIndex];
-		// 	// printf("%d %d\n", triangleIndex, resolvedIndex);
-		// 	// printf("%.1f %.1f %.1f \n", pos.x, pos.y, pos.z);
-		// 	// printf("%.1f %.1f %.1f \n", a_object.x, a_object.y, a_object.z);
-
-		// 	int resolvedIndex = sh_mesh.indices[300'000'000];
-		// 	printf("%d\n", resolvedIndex);
-		// }
 		
 		if constexpr (INSTANCING == Instancing::NO){
 			mat4 worldView = args.transforms[sh_mesh.instances.offset];
@@ -554,7 +733,7 @@ void stage2_drawMediumTriangles(RasterArgs& args) {
 			}
 			continue;
 		}
-
+		
 		// Fragment Rasterization Loop
 		const float start_x = floorf(min_x);
 		const float start_y = floorf(min_y);
@@ -566,6 +745,22 @@ void stage2_drawMediumTriangles(RasterArgs& args) {
 		// float inv_z_a = __fdividef(1.0f, a_ndc.z);
 		// float inv_z_b = __fdividef(1.0f, b_ndc.z);
 		// float inv_z_c = __fdividef(1.0f, c_ndc.z);
+		
+		CMesh mesh = args.instances[meshIndex];
+		uint32_t i_a;
+		uint32_t i_b;
+		uint32_t i_c;
+		vec2 uv_over_z_a;
+		vec2 uv_over_z_b;
+		vec2 uv_over_z_c;
+		if(mesh.texture.alphamask){
+			i_a = getResolvedVertexIndex<INDEXING, COMPRESSION>(mesh, 3 * triangleIndex + 0);
+			i_b = getResolvedVertexIndex<INDEXING, COMPRESSION>(mesh, 3 * triangleIndex + 1);
+			i_c = getResolvedVertexIndex<INDEXING, COMPRESSION>(mesh, 3 * triangleIndex + 2);
+			uv_over_z_a = mesh.uvs[i_a] * inv_z_a;
+			uv_over_z_b = mesh.uvs[i_b] * inv_z_b;
+			uv_over_z_c = mesh.uvs[i_c] * inv_z_c;
+		}
 
 		for (
 			int fragOffset = warp.thread_rank(); 
@@ -588,27 +783,33 @@ void stage2_drawMediumTriangles(RasterArgs& args) {
 
 			if (s >= 0.0f && t >= 0.0f && v >= 0.0f) {
 				int pixelID = toFramebufferIndex((int)px, (int)py, args.target.width);
-				if (pixelID < args.target.width * args.target.height) {
+				if (pixelID > 0 && pixelID < args.target.width * args.target.height) {
 
 					// float depth = v * a_ndc.z + s * b_ndc.z + t * c_ndc.z;
 					// perspective-correct interpolation
 					float inv_depth = v * inv_z_a + s * inv_z_b + t * inv_z_c;
 					float depth = 1.0f / inv_depth;
 					// float depth = __fdividef(1.0f, inv_depth);
+					
+					vec2 uv = (v * uv_over_z_a + s * uv_over_z_b + t * uv_over_z_c) * depth;
+					// Using nearest here because we're highly susceptible to aliasing for small triangles anyway.
+					// Perhaps we should be sampling the corresponding mip map level?
+					// uint32_t C = sampleColor_nearest(mesh.texture.data, mesh.texture.width, mesh.texture.height, uv);
+					// uint32_t alpha = C >> 24;
+					float alpha = 1.0f;
+					if(mesh.texture.alphamask){
+						alpha = sampleAlpha_nearest(mesh.texture.alphamask, mesh.texture.width, mesh.texture.height, uv);
+					}
+					
+					if(alpha > 0.5f){
+						uint64_t pixel = pack_pixel(depth, packed_id);
+						atomicMin(&args.target.framebuffer[pixelID], pixel);
 
-					uint64_t pixel = pack_pixel(depth, packed_id);
-					atomicMin(&args.target.framebuffer[pixelID], pixel);
-
-					if constexpr (ENABLE_FRAGCOUNTING){
-						atomicAdd(&args.state->dbg_fragcount, 1);
+						if constexpr (ENABLE_FRAGCOUNTING){
+							atomicAdd(&args.state->dbg_fragcount, 1);
+						}
 					}
 
-					// if(px == args.target.width){
-					// 	args.target.colorbuffer[pixelID] = 0x00000000'ff0000ff;
-					// }
-					// if(px < 0){
-					// 	args.target.colorbuffer[pixelID] = 0x00000000'ff00ffff;
-					// }
 				}
 			}
 		}
@@ -664,6 +865,21 @@ void stage3_drawHugeTriangles(RasterArgs args){
 		vec2 a_screen = ndcToScreen(a_ndc, args.target.width, args.target.height);
 		vec2 b_screen = ndcToScreen(b_ndc, args.target.width, args.target.height);
 		vec2 c_screen = ndcToScreen(c_ndc, args.target.width, args.target.height);
+		
+		uint32_t i_a;
+		uint32_t i_b;
+		uint32_t i_c;
+		vec2 uv_a;
+		vec2 uv_b;
+		vec2 uv_c;
+		if(mesh.texture.alphamask){
+			i_a = getResolvedVertexIndex<INDEXING, COMPRESSION>(mesh, 3 * tri.triangleIndex + 0);
+			i_b = getResolvedVertexIndex<INDEXING, COMPRESSION>(mesh, 3 * tri.triangleIndex + 1);
+			i_c = getResolvedVertexIndex<INDEXING, COMPRESSION>(mesh, 3 * tri.triangleIndex + 2);
+			uv_a = mesh.uvs[i_a];
+			uv_b = mesh.uvs[i_b];
+			uv_c = mesh.uvs[i_c];
+		}
 
 		vec2 v_ab = b_screen - a_screen;
 		vec2 v_ac = c_screen - a_screen;
@@ -760,15 +976,17 @@ void stage3_drawHugeTriangles(RasterArgs args){
 			});
 
 			
+			float bary_u, bary_v;
 			float t = intersectTriangle_mt(
-				origin, rayDir, 
+				origin, rayDir,
 				a_view, b_view, c_view,
-				false
+				false,
+				bary_u, bary_v
 			);
 
 			// rayDir = normalize(rayDir);
 			// float t = intersectTriangle(
-			// 	origin, rayDir, 
+			// 	origin, rayDir,
 			// 	a_view, b_view, c_view,
 			// 	false
 			// );
@@ -787,15 +1005,33 @@ void stage3_drawHugeTriangles(RasterArgs args){
 				continue;
 			}
 
+			vec2 uv = (1.0f - bary_u - bary_v) * uv_a + bary_u * uv_b + bary_v * uv_c;
+			// uint32_t C = sampleColor_linear(mesh.texture.data, mesh.texture.width, mesh.texture.height, uv);
+			// uint32_t alpha = C >> 24;
+			// if(alpha < 128) continue;
+			float alpha = 1.0f;
+			if(mesh.texture.alphamask){
+				alpha = sampleAlpha_linear(mesh.texture.alphamask, mesh.texture.width, mesh.texture.height, uv);
+			}
+			
 			float depth = dot(t * rayDir, viewDir);
 			// float depth = t;
 			// uint64_t pixel = pack_pixel(depth, tri.meshIndex, tri.triangleIndex);
 			uint64_t pixel = pack_pixel(depth, mesh.cummulativeTriangleCount + tri.triangleIndex);
 
-			atomicMin(&args.target.framebuffer[pixelID], pixel);
-			if constexpr (ENABLE_FRAGCOUNTING){
-				atomicAdd(&args.state->dbg_fragcount, 1);
+			if(alpha > 0.5f){
+				atomicMin(&args.target.framebuffer[pixelID], pixel);
+				if constexpr (ENABLE_FRAGCOUNTING){
+					atomicAdd(&args.state->dbg_fragcount, 1);
+				}
 			}
+			
+			// if(alpha > 0.5f){
+				
+			// 	uint64_t dbg_pixel = uint64_t(__float_as_uint(depth - 0.01f)) << 32 | 0xff0000ff;
+				
+			// 	atomicMin(&args.target.colorbuffer[pixelID], dbg_pixel);
+			// }
 
 		}
 

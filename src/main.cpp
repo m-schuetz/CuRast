@@ -93,12 +93,12 @@ void initScene() {
 	};
 
 	auto loadCubeJpeg = [=](){ 
-		std::string file = "./resources/meshes/Cube_70.glb";
+		std::string file = "D:/dev/workspaces/IVA/resources/meshes/Cube_70.glb";
 
 		static auto glb = largeGlb::load(file, context, {
 			.skipUVs = false, 
 			.compress = true,
-			.useJpegTextures = true,
+			.useJpegTextures = false,
 		});
 		glb->glbNode->transform = flip * glb->glbNode->transform;
 		editor->scene.world->children.push_back(glb->glbNode);
@@ -294,7 +294,7 @@ void initScene() {
 	// loadXyzDragon();
 	// loadSpot();
 	// loadWietrznia();
-	// loadSponza();
+	loadSponza();
 	// loadSponzaJPEG();
 	// loadCubeJpeg();
 	// loadPolygraphenewerkLeibzigInstances();

@@ -869,6 +869,34 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 		}
 		color = 0xffff00ff;
 		
+		// if(x == mouseX && y == mouseY){
+			
+		// 	if(mesh.texture.alphamask != 0){
+		// 		// printf("has alphamask \n");
+				
+		// 		// float ftx = (uv.x - floor(uv.x)) * float(width);
+		// 		// float fty = (uv.y - floor(uv.y)) * float(height);
+		// 		// int tx = fmodf(ftx, float(width));
+		// 		// int ty = fmodf(fty, float(height));
+		// 		// int texelID = tx + ty * width;
+		// 		// texelID = clamp(texelID, 0, int(width * height - 1));
+				
+		// 		// bool value = BitEdit::get(mesh.texture.alphamask, texelID);
+				
+		// 		uv.x = uv.x - floor(uv.x);
+		// 		uv.y = uv.y - floor(uv.y);
+		// 		int tx = int(uv.x * float(width) + 0.5f) % width;
+		// 		int ty = int(uv.y * float(height) + 0.5f) % height;
+		// 		int texelID = tx + ty * width;
+		// 		texelID = clamp(texelID, 0, int(width * height) - 1);
+
+		// 		bool alpha = BitEdit::get(mesh.texture.alphamask, texelID);
+				
+		// 		printf("texel[%6d] %u \n", texelID, alpha);
+		// 	}
+			
+		// }
+		
 		// TODO: These blocks here are a major performance bottleneck. 
 		// Removing them cuts registers from 88 to 56 and improves perf from 1.3ms to 0.88ms
 		if(rasterizationSettings.displayAttribute == DisplayAttribute::NONE){

@@ -269,6 +269,51 @@ __device__ float intersectTriangle_mt(
 	}
 }
 
+// Möller-Trumbore, also outputs barycentric coordinates at the intersection.
+// out_u is the weight for v1, out_v is the weight for v2, (1-out_u-out_v) for v0.
+__device__ float intersectTriangle_mt(
+	vec3 orig, vec3 dir,
+	vec3 v0, vec3 v1, vec3 v2,
+	bool cullBackFaces,
+	float& out_u, float& out_v
+) {
+	vec3 e1 = v1 - v0;
+	vec3 e2 = v2 - v0;
+
+	vec3 pvec = cross(dir, e2);
+	float det = dot(e1, pvec);
+
+	constexpr float EPSILON = 1e-7f;
+
+	if (cullBackFaces) {
+		if (det < EPSILON) return Infinity;
+		vec3 tvec = -v0;
+		float u = dot(tvec, pvec);
+		if (u < 0.0f || u > det) return Infinity;
+		vec3 qvec = cross(tvec, e1);
+		float v = dot(dir, qvec);
+		if (v < 0.0f || u + v > det) return Infinity;
+		float inv_det = 1.0f / det;
+		out_u = u * inv_det;
+		out_v = v * inv_det;
+		float t = dot(e2, qvec) * inv_det;
+		return t > 0.0f ? t : Infinity;
+	} else {
+		if (det > -EPSILON && det < EPSILON) return Infinity;
+		float inv_det = 1.0f / det;
+		vec3 tvec = -v0;
+		float u = dot(tvec, pvec) * inv_det;
+		if (u < 0.0f || u > 1.0f) return Infinity;
+		vec3 qvec = cross(tvec, e1);
+		float v = dot(dir, qvec) * inv_det;
+		if (v < 0.0f || u + v > 1.0f) return Infinity;
+		out_u = u;
+		out_v = v;
+		float t = dot(e2, qvec) * inv_det;
+		return t > 0.0f ? t : Infinity;
+	}
+}
+
 // see: https://github.com/mrdoob/three.js/blob/46961fbdc727f7df1c26eb0d5cc833c99ebe600a/src/math/Ray.js#L540
 // LICENSE: MIT (https://github.com/mrdoob/three.js/blob/dev/LICENSE)
 inline float intersectTriangle(

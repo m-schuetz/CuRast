@@ -47,4 +47,22 @@ struct BitEdit {
 			data[wordIdx + 1] = (data[wordIdx + 1] & secondMask) | (value >> bitsWritten);
 		}
 	}
+	
+	__host__ __device__
+	static void set(uint64_t* data, uint64_t bitOffset, bool value) {
+		uint64_t wordIdx = bitOffset / 64;
+		uint64_t bitShift = bitOffset % 64;
+		uint64_t mask = 1ULL << bitShift;
+		if (value)
+			data[wordIdx] |= mask;
+		else
+			data[wordIdx] &= ~mask;
+	}
+	
+	__host__ __device__
+	static bool get(uint64_t* data, uint64_t bitOffset) {
+		uint64_t wordIdx = bitOffset / 64;
+		uint64_t bitShift = bitOffset % 64;
+		return (data[wordIdx] >> bitShift) & 1ULL;
+	}
 };

@@ -90,7 +90,7 @@ namespace largeGlb{
 		return true;
 	}
 
-	Texture* createMipMappedTexture(void* data, int64_t width, int64_t height){
+	Texture* createMipMappedTexture(uint8_t* data, int64_t width, int64_t height){
 		int64_t levels = log2(max(width, height));
 		int64_t bytesPerPixel = 4;
 
@@ -105,9 +105,38 @@ namespace largeGlb{
 			mipWidth = (mipWidth + 2 - 1) / 2;
 			mipHeight = (mipHeight + 2 - 1) / 2;
 		}
+		
+		bool hasAlpha = false;
+		uint32_t numPixels = width * height;
+		
+		vector<uint64_t> alphamask(roundUp(width, 8ll) * roundUp(height, 8ll) / 64ll, 0xffffffff'ffffffffllu);
+		for(int i = 0; i < width * height; i++){
+			
+			bool pixelIsOpaque = data[4 * i + 3] >= 128;
+			
+			// int x = i % width;
+			// int y = i / width;
+			// pixelIsOpaque = x < (width / 2) && y < (height / 2);
+			
+			BitEdit::set(alphamask.data(), i, pixelIsOpaque);
+			
+			if(!pixelIsOpaque){
+				hasAlpha = true;
+			}
+		}
+		
+		//if(hasAlpha){
+		//	__debugbreak();
+		//}
 
 		CUdeviceptr cptr_texture = MemoryManager::alloc(byteSize, "texture");
 		cuMemcpyHtoD(cptr_texture, data, width * height * 4);
+		
+		CUdeviceptr cptr_alphamask = 0;
+		if(hasAlpha){
+			cptr_alphamask = MemoryManager::alloc(byteSizeOf(alphamask), "alphamask");
+			cuMemcpyHtoD(cptr_alphamask, alphamask.data(), byteSizeOf(alphamask));
+		}
 
 		uint32_t blockSize = 16;
 		uint32_t gridWidth = (width / 2 + blockSize) / blockSize;
@@ -119,6 +148,7 @@ namespace largeGlb{
 		texture->width = width;
 		texture->height = height;
 		texture->data = (uint32_t*)cptr_texture;
+		texture->alphamask = (uint64_t*)cptr_alphamask;
 
 		return texture;
 	}

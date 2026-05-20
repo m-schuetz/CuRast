@@ -180,6 +180,7 @@ struct Texture{
 	int width;
 	int height;
 	uint32_t* data;
+	uint64_t* alphamask;
 	HuffmanTable* huffmanTables;
 	QuantizationTable* quanttables;
 	uint32_t* mcuPositions;
