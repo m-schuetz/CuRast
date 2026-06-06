@@ -51,4 +51,4 @@ struct CuRastSettings{
 //   This makes some scenarios faster (e.g. uncompressed geometry) but others slower (resolve).
 // - Explicitly enabling compressed CUDA buffers seems to equalize the performance.
 // - For benchmarking, we enable it for Vulkan measurements and disable it for CUDA measuerements.
-// #define USE_VULKAN_SHARED_MEMORY
+#define USE_VULKAN_SHARED_MEMORY

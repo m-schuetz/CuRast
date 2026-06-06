@@ -297,12 +297,12 @@ void initScene() {
 
 	// createCube();
 	// loadZorah();
-	// loadGraffiti();
-	// loadHakone();
+	 //loadGraffiti();
+	 loadHakone();
 	// loadHakoneInstances();
 	// loadXyzDragon();
 	// loadSpot();
-	// loadWietrznia();
+	//loadWietrznia();
 	// loadSponza();
 	// loadSponzaJPEG();
 	// loadCubeJpeg();
