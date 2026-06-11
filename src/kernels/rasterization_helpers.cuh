@@ -4,6 +4,13 @@ using glm::ivec2;
 using glm::i8vec4;
 using glm::vec4;
 
+#if defined(__HIPCC_RTC__)
+// hiprtc/clang has no nvrtc-style -default-device flag, so unmarked free
+// functions default to __host__ and can't be called from the device kernels.
+// Make this header's helper functions __device__ for the runtime-compiled build.
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
+
 uint32_t toFramebufferIndex(int x, int y, int width){
 
 	return x + width * y;
@@ -43,7 +50,7 @@ uint64_t pack_pixel(float depth, uint64_t trianglePrefix){
 
 	uint64_t udepth = __float_as_uint(depth);
 	udepth = udepth & 0b01111111'11111111'11111111'11111000;
-	if(isinf(depth)) udepth = 0b01111111'11111111'11111111'11111000;
+	if(__builtin_isinf(depth)) udepth = 0b01111111'11111111'11111111'11111000;
 	udepth = udepth << 33;
 
 	uint64_t packed = udepth | trianglePrefix;
@@ -610,3 +617,6 @@ float cross(vec2 a, vec2 b){
 
 // 	return color;
 // }
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif

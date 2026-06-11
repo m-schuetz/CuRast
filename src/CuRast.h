@@ -14,9 +14,15 @@
 #include "./scene/SNPoints.h"
 #include "./scene/SNCPoints.h"
 
-#include "cuda.h"
-#include "cuda_runtime.h"
+// Runtime compilation uses different classes on each backend (hiprtc vs
+// nvrtc/nvJitLink), so the module program type is selected here.
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "HipModularProgram.h"
+using CudaModularProgram = HipModularProgram;
+using CudaModule = HipModule;
+#else
 #include "CudaModularProgram.h"
+#endif
 
 #include "VKRenderer.h"
 #include "OrbitControls.h"
@@ -43,6 +49,7 @@ struct CuRast{
 	Scene scene;
 
 	DeviceState* deviceState = nullptr;
+	double lastFrameMs = 0.0;
 	CUdeviceptr cptr_state;
 
 	CommonLaunchArgs launchArgs;
@@ -71,5 +78,6 @@ struct CuRast{
 	void render();
 	void postFrame();
 	void draw(Scene* scene, vector<View> views);
+	void renderHeadless(int width, int height, bool screenshot);
 
 };

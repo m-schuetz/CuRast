@@ -1,14 +1,35 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.21)
 
-set(TARGET_NAME CuRast) 
-project(${TARGET_NAME} LANGUAGES CXX CUDA)
+set(TARGET_NAME CuRast)
+
+option(USE_HIP "Build with HIP for AMD GPUs" OFF)
+
+# Always start with CXX; add CUDA or HIP depending on option
+project(${TARGET_NAME} LANGUAGES CXX)
+
+if(USE_HIP)
+    enable_language(HIP)
+    # Default to gfx90a if not specified; let -DCMAKE_HIP_ARCHITECTURES override
+    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
+        set(CMAKE_HIP_ARCHITECTURES "gfx90a")
+    endif()
+    add_compile_definitions(USE_HIP=1)
+else()
+    enable_language(CUDA)
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 include(cmake/common.cmake)
 
 # Paths to TurboJPEG
-set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib") 
+if(WIN32)
+    set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib")
+else()
+    # Use system TurboJPEG on Linux
+    find_library(TURBOJPEG_LIBRARY turbojpeg REQUIRED)
+endif() 
 
 # --------------------------------------------------------
 # Source files (C++ and CUDA)
@@ -45,10 +66,20 @@ target_include_directories(${TARGET_NAME} PRIVATE
 )
 
 add_subdirectory(libs/laszip)
-target_link_libraries(${TARGET_NAME} PRIVATE 
+target_link_libraries(${TARGET_NAME} PRIVATE
 	${TURBOJPEG_LIBRARY}
 	laszip
 )
+
+# For std::stacktrace support (GCC 13+) and TBB
+find_package(TBB QUIET)
+if(TBB_FOUND)
+	target_link_libraries(${TARGET_NAME} PRIVATE TBB::tbb)
+endif()
+# Link stdc++_libbacktrace for std::stacktrace (GCC 13/14; not needed on Windows)
+if(NOT WIN32)
+	target_link_libraries(${TARGET_NAME} PRIVATE -lstdc++exp)
+endif()
 
 # Add other third-party libs
 ADD_CUDA(${TARGET_NAME})
@@ -78,12 +109,21 @@ set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT $
 
 
 # Second project
-add_executable(PlyToGlb 
+add_executable(PlyToGlb
 	src/tools/PlyToGlb.cpp
 	src/unsuck_platform_specific.cpp
 )
+set_target_properties(PlyToGlb PROPERTIES
+	CXX_STANDARD 23
+	CXX_STANDARD_REQUIRED ON
+)
+target_compile_options(PlyToGlb PRIVATE -std=c++23)
 target_include_directories(PlyToGlb PRIVATE libs/glm)
 target_include_directories(PlyToGlb PRIVATE
 	./src
 	./libs
 )
+find_package(TBB QUIET)
+if(TBB_FOUND)
+	target_link_libraries(PlyToGlb PRIVATE TBB::tbb)
+endif()

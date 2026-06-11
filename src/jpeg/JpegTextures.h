@@ -1,9 +1,18 @@
 #pragma once
 
-#include "cuda.h"
+#include "../cuda_to_hip.h"
+
+// Runtime compilation uses different classes on each backend (hiprtc vs
+// nvrtc/nvJitLink), so the module program type is selected here.
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "HipModularProgram.h"
+using CudaModularProgram = HipModularProgram;
+using CudaModule = HipModule;
+#else
+#include "CudaModularProgram.h"
+#endif
 
 #include "kernels/HostDeviceInterface.h"
-#include "CudaModularProgram.h"
 #include "MemoryManager.h"
 #include "JptInterface.cuh"
 
@@ -59,7 +68,7 @@ struct JpegTextures{
 			&cptr_TBSlotsCounter,
 			&freezeCache
 		}, decodedMcuMap->capacity);
-		cuMemcpy((CUdeviceptr)decodedMcuMap->entries, (CUdeviceptr)decodedMcuMap_tmp->entries, decodedMcuMap_tmp->capacity * 8);
+		cuMemcpyDtoD((CUdeviceptr)decodedMcuMap->entries, (CUdeviceptr)decodedMcuMap_tmp->entries, decodedMcuMap_tmp->capacity * 8);
 	}
 
 };

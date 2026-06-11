@@ -10,9 +10,13 @@
 #include "scene/SceneNode.h"
 #include "scene/SNTriangles.h"
 #include "MemoryManager.h"
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "HipModularProgram.h"
+using CudaModularProgram = HipModularProgram;
+#else
 #include "CudaModularProgram.h"
+#endif
 #include "ThreadPool.h"
-#include "CudaModularProgram.h"
 #include "Timer.h"
 #include "BitEdit.h"
 #include "kernels/textureTools.cuh"
@@ -406,8 +410,8 @@ namespace largeGlb{
 			for(int i = 0; i < pool.numThreads; i++){
 				PinnedBuffer pinnedBuffer;
 				pinnedBuffer.size = roundUp(
-					max(int64_t(largestIndexbufferSize), 100'000'000ll), 
-					file->sectorSize) + file->sectorSize;
+					std::max<int64_t>(int64_t(largestIndexbufferSize), 100'000'000ll),
+					int64_t(file->sectorSize)) + int64_t(file->sectorSize);
 
 				auto result = cuMemAllocHost(&pinnedBuffer.buffer, pinnedBuffer.size);
 				CURuntime::assertCudaSuccess(result);
@@ -440,7 +444,7 @@ namespace largeGlb{
 				size_indexbuffer_gltf += task.byteSize;
 				
 				pool.enqueue([&, this, task](int threadIndex){
-					cuCtxSetCurrent(context);
+					if(context){ cuCtxSetCurrent(context); }
 
 					gltfloader::Accessor accessor = gltf.accessors[task.accessorIndex];
 					gltfloader::BufferView view = gltf.bufferViews[accessor.bufferView];
@@ -517,7 +521,7 @@ namespace largeGlb{
 					}
 
 					DeviceBuffer db;
-					db.cptr = loaded->memory->cptr + gpu_memory_offset;
+					db.cptr = HIP_DEVPTR_ADD(loaded->memory->cptr, gpu_memory_offset);
 					db.size = indexbufferByteSize;
 					db.index_min = index_min;
 					db.index_max = index_max;
@@ -536,7 +540,7 @@ namespace largeGlb{
 			for(auto task : imageLoadTasks){
 
 				pool.enqueue([&, task](int threadIndex){
-					cuCtxSetCurrent(context);
+					if(context){ cuCtxSetCurrent(context); }
 
 					gltfloader::Image& image = gltf.images[task.imageIndex];
 					gltfloader::BufferView& view = gltf.bufferViews[image.bufferView];
@@ -620,7 +624,7 @@ namespace largeGlb{
 				size_positions_gltf += task.byteSize;
 				
 				pool.enqueue([=, this, &gpu_memory_counter, &size_positions_curast](int threadIndex){
-					cuCtxSetCurrent(context);
+					if(context){ cuCtxSetCurrent(context); }
 
 					gltfloader::Accessor accessor = gltf.accessors[task.accessorIndex];
 					uint64_t numVertices = accessor.count;
@@ -638,7 +642,7 @@ namespace largeGlb{
 						uint64_t gpu_memory_offset = gpu_memory_counter.fetch_add(compressedSize);
 
 						DeviceBuffer db;
-						db.cptr = loaded->memory->cptr + gpu_memory_offset;
+						db.cptr = HIP_DEVPTR_ADD(loaded->memory->cptr, gpu_memory_offset);
 						db.size = compressedSize;
 						accessorToDevicebufferMapping[task.accessorIndex] = db;
 
@@ -678,7 +682,7 @@ namespace largeGlb{
 						uint64_t gpu_memory_offset = gpu_memory_counter.fetch_add(vertexbufferSize);
 
 						DeviceBuffer db;
-						db.cptr = loaded->memory->cptr + gpu_memory_offset;
+						db.cptr = HIP_DEVPTR_ADD(loaded->memory->cptr, gpu_memory_offset);
 						db.size = vertexbufferSize;
 						accessorToDevicebufferMapping[task.accessorIndex] = db;
 
@@ -708,7 +712,7 @@ namespace largeGlb{
 						}
 					}else{
 						println("unsupported bytes stride or component format");
-						println("{}", stacktrace::current());
+						std::cerr << to_string(stacktrace::current()) << std::endl;
 						__debugbreak();
 						exit(12346347);
 					}
@@ -745,7 +749,7 @@ namespace largeGlb{
 					uint64_t byteSize = accessor.getByteSize();
 					
 					pool.enqueue([=, &gpu_memory_counter](int threadIndex){
-						cuCtxSetCurrent(context);
+						if(context){ cuCtxSetCurrent(context); }
 
 						uint64_t numVertices = accessor.count;
 						PinnedBuffer pinned = pinnedBuffers[threadIndex];
@@ -759,7 +763,7 @@ namespace largeGlb{
 						uint64_t gpu_memory_offset = gpu_memory_counter.fetch_add(vertexbufferSize);
 
 						DeviceBuffer db;
-						db.cptr = loaded->memory->cptr + gpu_memory_offset;
+						db.cptr = HIP_DEVPTR_ADD(loaded->memory->cptr, gpu_memory_offset);
 						db.size = vertexbufferSize;
 						accessorToDevicebufferMapping[accessorIndex] = db;
 
@@ -818,7 +822,7 @@ namespace largeGlb{
 							readValue = readValue_vec3_f32;
 						}else{
 							println("ERROR: unsupported combination of accessor type and component type");
-							println("{}", stacktrace::current());
+							std::cerr << to_string(stacktrace::current()) << std::endl;
 							__debugbreak();
 							exit(123572465);
 						}
@@ -888,7 +892,7 @@ namespace largeGlb{
 					if(bufferView.byteStride != -1) sourceByteStride = bufferView.byteStride;
 					
 					pool.enqueue([=, &gpu_memory_counter](int threadIndex){
-						cuCtxSetCurrent(context);
+						if(context){ cuCtxSetCurrent(context); }
 
 						uint64_t numVertices = accessor.count;
 						PinnedBuffer pinned = pinnedBuffers[threadIndex];
@@ -902,7 +906,7 @@ namespace largeGlb{
 						uint64_t gpu_memory_offset = gpu_memory_counter.fetch_add(targetByteSize);
 
 						DeviceBuffer db;
-						db.cptr = loaded->memory->cptr + gpu_memory_offset;
+						db.cptr = HIP_DEVPTR_ADD(loaded->memory->cptr, gpu_memory_offset);
 						db.size = targetByteSize;
 						accessorToDevicebufferMapping[accessorIndex] = db;
 
@@ -932,7 +936,7 @@ namespace largeGlb{
 								loaded->memory->memcopyHtoD(gpu_memory_offset, (uint8_t*)pinned.buffer, batch_buffersize);
 							}else{
 								println("unsupported");
-								println("{}", stacktrace::current());
+								std::cerr << to_string(stacktrace::current()) << std::endl;
 								exit(623546);
 							}
 							gpu_memory_offset += batch_buffersize;
@@ -979,7 +983,7 @@ namespace largeGlb{
 					task.byteSize = accessor.getByteSize();
 					
 					pool.enqueue([=, this, &gpu_memory_counter](int threadIndex){
-						cuCtxSetCurrent(context);
+						if(context){ cuCtxSetCurrent(context); }
 
 						gltfloader::Accessor accessor = gltf.accessors[task.accessorIndex];
 						uint64_t numVertices = accessor.count;
@@ -991,7 +995,7 @@ namespace largeGlb{
 						uint64_t gpu_memory_offset = gpu_memory_counter.fetch_add(targetByteSize);
 
 						DeviceBuffer db;
-						db.cptr = loaded->memory->cptr + gpu_memory_offset;
+						db.cptr = HIP_DEVPTR_ADD(loaded->memory->cptr, gpu_memory_offset);
 						db.size = targetByteSize;
 						accessorToDevicebufferMapping[task.accessorIndex] = db;
 
@@ -1000,7 +1004,7 @@ namespace largeGlb{
 						if(byteStride < sizeof(vec2)){
 							println("Currently unsupported: Source byte stride {} must be larger than target byte stride {}",
 								byteStride, sizeof(vec2));
-							println("{}", stacktrace::current());
+							std::cerr << to_string(stacktrace::current()) << std::endl;
 							exit(635367824);
 						}
 

@@ -1,6 +1,6 @@
 ﻿#include <cstdio>
 #include <format>
-#include <print>
+#include "compat_print.h"
 #include <filesystem>
 #include <string>
 #include <queue>
@@ -11,9 +11,18 @@
 
 #include "unsuck.hpp"
 
-#include "cuda.h"
-#include "cuda_runtime.h"
+#include "cuda_to_hip.h"
+
+// Runtime compilation uses different classes on each backend (hiprtc vs
+// nvrtc/nvJitLink), so the module program type is selected here.
+#if defined(USE_HIP)
+#include "HipModularProgram.h"
+using CudaModularProgram = HipModularProgram;
+using CudaModule = HipModule;
+#else
 #include "CudaModularProgram.h"
+#endif
+
 #include "CudaVulkanSharedMemory.h"
 #include "VulkanCudaSharedMemory.h"
 #include "jpeg/JPEGIndexer.h"
@@ -42,11 +51,20 @@ mat4 flip = mat4(
 	0.000,  0.000, 0.000, 1.000);
 
 void initCuda() {
+#if defined(USE_HIP)
+	hipInit(0);
+	hipDeviceGet(&CURuntime::device, 0);
+	// Use the primary context: the deprecated explicit hipCtxCreate context
+	// breaks regular hipModuleLaunchKernel dispatches on ROCm 7.2 (cooperative
+	// launches work; regular ones memory-fault).
+	hipSetDevice(CURuntime::device);
+	context = nullptr;
+#else
 	cuInit(0);
-	
 	CUctxCreateParams creation_params = {};
 	cuDeviceGet(&CURuntime::device, 0);
 	cuCtxCreate(&context, &creation_params, 0, CURuntime::device);
+#endif
 }
 
 
@@ -392,6 +410,54 @@ int main(int argc, char** argv){
 	}
 
 	std::locale::global(getSaneLocale());
+	
+	// Headless rasterization benchmark: --bench <file.glb> [width height frames]
+	string benchFile = "";
+	int benchW = 1920, benchH = 1080, benchFrames = 60;
+	for(int i = 1; i < argc; i++){
+		if(string(argv[i]) == "--bench" && i + 1 < argc){
+			benchFile = argv[i + 1];
+			if(i + 4 < argc){ benchW = atoi(argv[i+2]); benchH = atoi(argv[i+3]); benchFrames = atoi(argv[i+4]); }
+		}
+	}
+	if(benchFile != ""){
+		initCuda();
+		CuRast::setup();
+		VKRenderer::camera = make_shared<Camera>();
+		VKRenderer::camera->setSize(benchW, benchH);
+	
+		CuRast* editor = CuRast::instance;
+		Scene& scene = editor->scene;
+		println("[bench] loading {}", benchFile);
+		auto glb = largeGlb::load(benchFile, context, {.skipUVs = false, .compress = false});
+		scene.world->children.push_back(glb->glbNode);
+		scene.updateTransformations();
+	
+		Box3 aabb = glb->glbNode->aabb;
+		vec3 extent = aabb.max - aabb.min;
+		vec3 center = (aabb.min + aabb.max) * 0.5f;
+		Runtime::controls->yaw    = -7.204;
+		Runtime::controls->pitch  = -0.579;
+		Runtime::controls->radius = length(extent);
+		Runtime::controls->target = { center.x, center.y, center.z };
+		println("[bench] {}x{} {} frames, model extent {:.1f}", benchW, benchH, benchFrames, length(extent));
+	
+		Runtime::controls->update();
+		VKRenderer::camera->world = Runtime::controls->world;
+		VKRenderer::camera->update();
+
+		double best = 1e30;
+		for(int f = 0; f < benchFrames; f++){
+			editor->renderHeadless(benchW, benchH, f == benchFrames - 1);
+			double ms = editor->lastFrameMs;
+			if(f > 0 && ms > 0.0 && ms < best) best = ms;
+			println("[bench] frame {:3}: visbuffer pipeline = {:7.3f} ms  ({} of {} tris visible, {} fragments)",
+				f, ms, (uint64_t)Runtime::numVisibleTriangles, (uint64_t)Runtime::numTriangles, (uint64_t)editor->deviceState->dbg_fragcount);
+		}
+		println("[bench] best visbuffer-pipeline time: {:.3f} ms @ {}x{}", best, benchW, benchH);
+		println("[bench] wrote ./bench_render.png");
+		return 0;
+	}
 
 	initCuda();
 	VKRenderer::init();

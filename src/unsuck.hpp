@@ -3,6 +3,15 @@
 
 #define NOMINMAX
 
+// Cross-platform debug break
+#ifndef __debugbreak
+#if defined(_WIN32)
+#define __debugbreak() __debugbreak()
+#else
+#define __debugbreak() __builtin_trap()
+#endif
+#endif
+
 #include <string>
 #include <vector>
 #include <fstream>
@@ -20,7 +29,7 @@
 #include <cstring>
 #include <functional>
 #include <mutex>
-#include <print>
+#include "compat_print.h"
 #include <stacktrace>
 
 using std::cout;
@@ -53,8 +62,9 @@ static long long unsuck_start_time = high_resolution_clock::now().time_since_epo
 
 #if defined(__linux__)
 constexpr auto fseek_64_all_platforms = fseeko64;
-#elif defined(WIN32)
-constexpr auto fseek_64_all_platforms = _fseeki64;
+#elif defined(WIN32) || defined(_WIN32)
+// _fseeki64 has __declspec(dllimport) in DLL builds, which is not constexpr.
+static auto fseek_64_all_platforms = _fseeki64;
 #endif
 
 
@@ -818,6 +828,14 @@ inline T roundUp(T number, T granularity){
 	T count = (number + granularity - 1) / granularity;
 
 	return count * granularity;
+}
+
+// Overload for mixed types
+template<typename T, typename U>
+inline auto roundUp(T number, U granularity) -> decltype(number + granularity) {
+	using Common = decltype(number + granularity);
+	Common count = (Common(number) + Common(granularity) - 1) / Common(granularity);
+	return count * Common(granularity);
 }
 
 template<class T, class B>

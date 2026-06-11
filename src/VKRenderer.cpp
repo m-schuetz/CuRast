@@ -6,8 +6,10 @@
 #include "CuRastSettings.h"
 
 #include <filesystem>
-#include <print>
+#include "compat_print.h"
 #include <set>
+
+#include "cuda_to_hip.h"
 
 namespace fs = std::filesystem;
 
@@ -67,9 +69,17 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
 // ---------------------------------------------------------------------------
 
 void VKTexture::destroyCuda() {
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+	// Kept guarded: the mip array is freed with the runtime-API hipFreeMipmappedArray,
+	// not the driver-API hipMipmappedArrayDestroy that cuMipmappedArrayDestroy maps to.
+	if (cudaSurface) { hipDestroySurfaceObject(cudaSurface);         cudaSurface = 0; }
+	if (cudaMipArray) { hipFreeMipmappedArray(cudaMipArray);          cudaMipArray = nullptr; }
+	if (cudaExtMem) { hipDestroyExternalMemory(cudaExtMem);         cudaExtMem = nullptr; }
+#else
 	if (cudaSurface) { cuSurfObjectDestroy(cudaSurface);         cudaSurface = 0; }
 	if (cudaMipArray) { cuMipmappedArrayDestroy(cudaMipArray);    cudaMipArray = nullptr; }
 	if (cudaExtMem) { cuDestroyExternalMemory(cudaExtMem);      cudaExtMem = nullptr; }
+#endif
 }
 
 void VKTexture::destroy() {
@@ -82,6 +92,15 @@ void VKTexture::destroy() {
 void VKTexture::importToCuda() {
 	destroyCuda();
 
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+	// HIP-Vulkan mipmapped array interop is not yet supported in ROCm 7.2
+	// (hipExternalMemoryGetMappedMipmappedArray is not exported from libamdhip64).
+	// For now, skip texture interop on HIP builds. The rasterizer will still work
+	// but without Vulkan-HIP texture sharing for surface writes.
+	// TODO: implement buffer-based workaround when ROCm adds this API
+	std::cerr << "WARNING: VKTexture::importToCuda() not implemented for HIP" << std::endl;
+#else
+	// CUDA path
 #ifdef _WIN32
 	VkMemoryGetWin32HandleInfoKHR handleInfo = {};
 	handleInfo.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
@@ -135,6 +154,7 @@ void VKTexture::importToCuda() {
 	resDesc.resType          = CU_RESOURCE_TYPE_ARRAY;
 	resDesc.res.array.hArray = level0;
 	cuSurfObjectCreate(&cudaSurface, &resDesc);
+#endif
 }
 
 void VKTexture::setSize(int w, int h) {
@@ -535,9 +555,9 @@ void VKRenderer::createSurface() {
 }
 
 void VKRenderer::pickPhysicalDevice() {
-	// Try to match the CUDA device by UUID
-	CUuuid cudaUUID;
-	cuDeviceGetUuid(&cudaUUID, CURuntime::device);
+	// Try to match the GPU device by UUID
+	CUuuid gpuUUID;
+	cuDeviceGetUuid(&gpuUUID, CURuntime::device);
 
 	uint32_t deviceCount = 0;
 	vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
@@ -556,7 +576,7 @@ void VKRenderer::pickPhysicalDevice() {
 			props2.pNext = &idProps;
 			vkGetPhysicalDeviceProperties2(candidate, &props2);
 
-			if (memcmp(cudaUUID.bytes, idProps.deviceUUID, VK_UUID_SIZE) == 0) {
+			if (memcmp(gpuUUID.bytes, idProps.deviceUUID, VK_UUID_SIZE) == 0) {
 				physDevice = candidate;
 				println("Matched Vulkan device to CUDA device by UUID: {}",
 					std::string(props2.properties.deviceName));

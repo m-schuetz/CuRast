@@ -1,6 +1,6 @@
 #pragma once
 
-#include <print>
+#include "compat_print.h"
 #include <mutex>
 #include <vector>
 
@@ -9,7 +9,7 @@
 #include <vulkan/vulkan_win32.h>
 #endif
 
-#include "cuda.h"
+#include "cuda_to_hip.h"
 #include "unsuck.hpp"
 #include "VKRenderer.h"
 #include "CURuntime.h"
@@ -70,7 +70,7 @@ struct CudaVulkanSharedMemory {
 		for (auto& chunk : chunks) {
 			if (chunk.vkMemory != VK_NULL_HANDLE)
 				vkFreeMemory(VKRenderer::device, chunk.vkMemory, nullptr);
-			cuMemUnmap(cptr + chunk.offset, chunk.size);
+			cuMemUnmap(HIP_DEVPTR_ADD(cptr, chunk.offset), chunk.size);
 			if (chunk.cuHandle)
 				cuMemRelease(chunk.cuHandle);
 		}
@@ -204,7 +204,7 @@ struct CudaVulkanSharedMemory {
 
 		while (committedSize < requested_size) {
 			uint64_t diff             = requested_size - committedSize;
-			uint64_t stepSize         = min(diff, 1'000'000'000llu);
+			uint64_t stepSize         = std::min<uint64_t>(diff, 1000000000ull);
 			uint64_t currentRequested = committedSize + stepSize;
 			uint64_t padded           = roundUp(currentRequested, granularity);
 			if (padded <= committedSize) break;
@@ -218,7 +218,7 @@ struct CudaVulkanSharedMemory {
 			CURuntime::assertCudaSuccess(cuRes);
 
 			cuCtxSynchronize();
-			cuRes = cuMemMap(cptr + chunkOffset, chunkSize, 0, cuHandle, 0);
+			cuRes = cuMemMap(HIP_DEVPTR_ADD(cptr, chunkOffset), chunkSize, 0, cuHandle, 0);
 			cuCtxSynchronize();
 			CURuntime::assertCudaSuccess(cuRes);
 
@@ -238,7 +238,7 @@ struct CudaVulkanSharedMemory {
 		accessDesc.flags         = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
 
 		cuCtxSynchronize();
-		CUresult cuRes = cuMemSetAccess(cptr + phaseStartOffset,
+		CUresult cuRes = cuMemSetAccess(HIP_DEVPTR_ADD(cptr, phaseStartOffset),
 		                                committedSize - phaseStartOffset,
 		                                &accessDesc, 1);
 		cuCtxSynchronize();
@@ -297,7 +297,7 @@ struct CudaVulkanSharedMemory {
 #ifdef _WIN32
 				CloseHandle(win32Handle);
 #endif
-				println("{}", stacktrace::current());
+				std::cerr << to_string(stacktrace::current()) << std::endl;
 				exit(26245762354);
 			}
 
@@ -333,17 +333,17 @@ struct CudaVulkanSharedMemory {
 
 		if(!validRange){
 			println("ERROR: Attempted to memcpy to unallocated or uncomitted range.");
-			println("    cptr:          {:15L}", cptr);
-			println("    comitted:      {:15L}", committedSize);
-			println("    target offset: {:15L}", offset);
-			println("    source size:   {:15L}", size);
+			println("    cptr:          {:15}", cptr);
+			println("    comitted:      {:15}", committedSize);
+			println("    target offset: {:15}", offset);
+			println("    source size:   {:15}", size);
 
-			println("{}", trace);
+			std::cerr << to_string(trace) << std::endl;
 
 			exit(652345345);
 		}
 
-		CUresult result = cuMemcpyHtoD(cptr + offset, source, size);
+		CUresult result = cuMemcpyHtoD(HIP_DEVPTR_ADD(cptr, offset), source, size);
 		CURuntime::assertCudaSuccess(result);
 	}
 };

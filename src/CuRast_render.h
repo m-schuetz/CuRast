@@ -12,6 +12,37 @@ using namespace std;
 CudaVirtualMemory* cvm_framebuffer = nullptr;
 CudaVirtualMemory* cvm_colorbuffer = nullptr;
 bool initialized = false;
+#if defined(USE_HIP)
+// Dispatch these kernels inline at the call site. On ROCm 7.2 / gfx90a,
+// dispatches issued through HipModularProgram::launch()/launch2D for this
+// module intermittently raise GPU memory faults while identical inline
+// dispatch sequences are reliable; cause not yet isolated (kernel arguments,
+// timing instrumentation, launch API and module identity were all ruled out).
+#define INLINE_LAUNCH_1D(prog_, name_, argsArr_, count_) do { \
+	hipFunction_t f_ = (prog_)->getKernel(name_); \
+	if(f_){ \
+		uint32_t bs_ = 256; uint32_t gs_ = ((count_) + bs_ - 1) / bs_; \
+		hipModuleLaunchKernel(f_, gs_,1,1, bs_,1,1, 0, 0, (argsArr_), nullptr); \
+		hipStreamSynchronize(0); \
+	} \
+} while(0)
+#define INLINE_LAUNCH_2D(prog_, name_, argsArr_, w_, h_) do { \
+	hipFunction_t f_ = (prog_)->getKernel(name_); \
+	if(f_){ \
+		uint32_t bs_ = 8; \
+		hipModuleLaunchKernel(f_, ((w_)+bs_-1)/bs_, ((h_)+bs_-1)/bs_, 1, bs_,bs_,1, 0, 0, (argsArr_), nullptr); \
+		hipStreamSynchronize(0); \
+	} \
+} while(0)
+#else
+// CUDA path: dispatch through the module program as upstream does (the gfx90a
+// inline-dispatch workaround above does not apply on NVIDIA).
+#define INLINE_LAUNCH_1D(prog_, name_, argsArr_, count_) \
+	(prog_)->launch(name_, (argsArr_), (count_))
+#define INLINE_LAUNCH_2D(prog_, name_, argsArr_, w_, h_) \
+	(prog_)->launch2D(name_, (argsArr_), (w_), (h_))
+#endif
+
 JpegTextures* jpegTextures = nullptr;
 
 // Cuda-Vulkan interop
@@ -50,6 +81,8 @@ void unmapCudaVk(MappedTextures& mappings){
 
 void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebuffer, CudaModularProgram* prog_resolve){
 
+	int ssW = view.framebuffer ? view.framebuffer->width  : VKRenderer::width;
+	int ssH = view.framebuffer ? view.framebuffer->height : VKRenderer::height;
 	uint64_t numPixels = target.width * target.height;
 	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
 
@@ -65,11 +98,11 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 		&cptr_ssaoShadebuffer,
 		&CuRastSettings::enableEDL,
 		&CuRastSettings::enableSSAO,
-		&view.framebuffer->width,
-		&view.framebuffer->height,
+		&ssW,
+		&ssH,
 		&backgroundColor
 	};
-	prog_resolve->launch2D("kernel_resolve_colorbuffer_to_screenshot", args, target.width, target.height);
+	INLINE_LAUNCH_2D(prog_resolve, "kernel_resolve_colorbuffer_to_screenshot", args, target.width, target.height);
 
 	void* screenshot_host = nullptr;
 	cuMemAllocHost(&screenshot_host, 4 * numPixels);
@@ -144,10 +177,33 @@ void drawTrianglesVisbuffer(
 	args.nontrivialTrianglesList         = (uint64_t*)cptr_nontrivialList;
 	args.target                          = target;
 	args.state                           = (DeviceState*)CuRast::instance->cptr_state;
-	
+
+#if defined(USE_HIP)
+	// Zero stage1 counters and dbg_fragcount on the CPU so stage1 can be
+	// launched non-cooperatively. hipModuleLaunchCooperativeKernel fails
+	// (error 719) on gfx1201; on gfx1100 a full-occupancy cooperative launch
+	// of stage2 deadlocked for the same scheduler reason.
+	CUdeviceptr cptr_state_dev = CuRast::instance->cptr_state;
+	cuMemsetD8Async(cptr_numProcessedBatches,            0, 4, 0);
+	cuMemsetD8Async(cptr_numProcessedBatches_nontrivial, 0, 4, 0);
+	cuMemsetD8Async(cptr_hugeTrianglesCounter,           0, 4, 0);
+	cuMemsetD8Async(cptr_nontrivialCounter,              0, 4, 0);
+	cuMemsetD8Async(cptr_numProcessedHugeTriangles,      0, 4, 0);
+	cuMemsetD8Async(HIP_DEVPTR_ADD(cptr_state_dev, offsetof(DeviceState, dbg_fragcount)), 0, sizeof(uint64_t), 0);
+
+	prog->launchOccupancyBased(strKernelStage1, vector<void*>{&args}, {.blocksize = TRIANGLES_PER_SWEEP});
+	// Stage2 uses warp-level work distribution (no grid.sync): launch non-cooperatively
+	// at full occupancy so all SMs are busy. On gfx1100, grid.sync inside a cooperative
+	// launch at full occupancy (16 blocks/SM x 35 = 560) deadlocks because the driver
+	// cannot schedule all 560 blocks simultaneously; a non-cooperative launch avoids this.
+	prog->launchOccupancyBased(strKernelStage2, vector<void*>{&args});
+	// Stage3 has no grid.sync (only block.sync): launch non-cooperatively.
+	prog->launchOccupancyBased(strKernelStage3, vector<void*>{&args}, {.blocksize = 64});
+#else
 	prog->launchCooperative(strKernelStage1, vector<void*>{&args}, {.blocksize = TRIANGLES_PER_SWEEP});
 	prog->launchCooperative(strKernelStage2, vector<void*>{&args});
 	prog->launchCooperative(strKernelStage3, vector<void*>{&args}, {.blocksize = 64});
+#endif
 
 	auto cuend = Timer::recordCudaTimestamp();
 	Timer::recordDuration("<triangles visbuffer pipeline>", custart, cuend);
@@ -171,8 +227,10 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	RenderTarget target;
 	target.framebuffer = (uint64_t*)cvm_framebuffer->cptr;
 	target.colorbuffer = (uint64_t*)cvm_colorbuffer->cptr;
-	target.width = supersamplingFactor * view.framebuffer->width;
-	target.height = supersamplingFactor * view.framebuffer->height;
+	int fbW = view.framebuffer ? view.framebuffer->width  : VKRenderer::width;
+	int fbH = view.framebuffer ? view.framebuffer->height : VKRenderer::height;
+	target.width = supersamplingFactor * fbW;
+	target.height = supersamplingFactor * fbH;
 	target.view = view.view;
 	target.viewI = viewI;
 	target.proj = view.proj;
@@ -365,18 +423,21 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 		int numPixels = target.width * target.height;
 
-		vector<shared_ptr<VKTexture>> attachments = {view.framebuffer->colorAttachment};
-		auto mappings = mapCudaVk(attachments);
+		MappedTextures mappings;
+		if(view.framebuffer){
+			vector<shared_ptr<VKTexture>> attachments = {view.framebuffer->colorAttachment};
+			mappings = mapCudaVk(attachments);
+		}
 
 		static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/resolve.cu",});
 		// memcpy arguments to constant buffer
 		CUdeviceptr cptr_target = prog->getGlobalsPointer("c_target");
-		cuMemcpyHtoDAsync(cptr_target, &target, sizeof(target), 0);
+		if(cptr_target){ cuMemcpyHtoDAsync(cptr_target, &target, sizeof(target), 0); }
 
 		// Let the first kernel in the frame be a dummy kernel to take the hit for CUDA-OpenGL interop overhead
 		// (so that we get more accurate timings for the other kernels)
 		static CUdeviceptr dummydata = MemoryManager::alloc(16, "dummydata");
-		prog->launch("kernel_dummy", {&dummydata}, 1);
+		{ void* dargs_[1] = { &dummydata }; INLINE_LAUNCH_1D(prog, "kernel_dummy", dargs_, 1); }
 		
 		{ // resize and clear cuda framebuffer
 			uint32_t clearColor = 0xff000000;
@@ -386,24 +447,20 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			cvm_framebuffer->commit(requiredBytes);
 			cvm_colorbuffer->commit(requiredBytes);
 
-			prog->launch("kernel_clearFramebuffer", {
-				&cvm_framebuffer->cptr,
-				&numPixels,
-				&clearColor,
-				&clearDepth
-			}, numPixels);
+			{
+				void* cargs_[4] = { &cvm_framebuffer->cptr, &numPixels, &clearColor, &clearDepth };
+				INLINE_LAUNCH_1D(prog, "kernel_clearFramebuffer", cargs_, numPixels);
+			}
 
-			prog->launch("kernel_clearFramebuffer", {
-				&cvm_colorbuffer->cptr,
-				&numPixels,
-				&clearColor,
-				&clearDepth
-			}, numPixels);
+			{
+				void* cargs2_[4] = { &cvm_colorbuffer->cptr, &numPixels, &clearColor, &clearDepth };
+				INLINE_LAUNCH_1D(prog, "kernel_clearFramebuffer", cargs2_, numPixels);
+			}
 		}
 
 		drawTrianglesVisbuffer(
-			scene, view, meshes_unique, meshes_allInstances, 
-			cvm_meshes->cptr, 
+			scene, view, meshes_unique, meshes_allInstances,
+			cvm_meshes->cptr,
 			cvm_instances->cptr, cvm_transforms->cptr, cvm_triangleCountPrefixsum->cptr,
 			target, mappings
 		);
@@ -478,7 +535,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 				&rasterSettings,
 				&jpp,
 			};
-			prog->launch2D("kernel_resolve_visbuffer_to_colorbuffer2D", args, target.width, target.height);
+			INLINE_LAUNCH_2D(prog, "kernel_resolve_visbuffer_to_colorbuffer2D", args, target.width, target.height);
 		}
 
 		if(hasJpegCompressedTextures){
@@ -540,7 +597,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 				&jpegTextures->cptr_TBSlotsCounter,
 				&freezeCache
 			}, jpegTextures->decodedMcuMap->capacity);
-			cuMemcpy((CUdeviceptr)jpegTextures->decodedMcuMap->entries, (CUdeviceptr)jpegTextures->decodedMcuMap_tmp->entries, jpegTextures->decodedMcuMap_tmp->capacity * 8);
+			cuMemcpyDtoD((CUdeviceptr)jpegTextures->decodedMcuMap->entries, (CUdeviceptr)jpegTextures->decodedMcuMap_tmp->entries, jpegTextures->decodedMcuMap_tmp->capacity * 8);
 
 			// {
 			// 	// Disable caching by fully clearing the MCU slot list and hash map at the end of each frame.
@@ -621,7 +678,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// 	&CuRastSettings::enableSSAO,
 		// });
 
-		{ // RESOLVE COLOR BUFFER (write to graphics API framebuffer)
+		if(view.framebuffer && !mappings.surfaces.empty()){ // RESOLVE COLOR BUFFER (write to graphics API framebuffer)
 			int viewWidth = view.framebuffer->width;
 			int viewHeight = view.framebuffer->height;
 
@@ -678,6 +735,27 @@ void initialize(){
 	jpegTextures = new JpegTextures();
 
 	initialized = true;
+}
+
+void CuRast::renderHeadless(int W, int H, bool screenshot){
+	VKRenderer::width = W;
+	VKRenderer::height = H;
+	initialize();
+
+	VKRenderer::view.framebuffer = nullptr;
+	VKRenderer::view.view = VKRenderer::camera->view;
+	VKRenderer::view.proj = VKRenderer::camera->proj;
+
+	CuRastSettings::requestScreenshot = screenshot ? make_shared<string>("./bench_render.png") : nullptr;
+
+	Timer::enabled = true;
+	draw(&scene, { VKRenderer::view });
+
+	lastFrameMs = 0.0;
+	for(auto& r : Timer::resolve()){
+		Runtime::timings.add(r.label, r.milliseconds);
+		if(r.label == "<triangles visbuffer pipeline>") lastFrameMs += r.milliseconds;
+	}
 }
 
 void CuRast::render(){

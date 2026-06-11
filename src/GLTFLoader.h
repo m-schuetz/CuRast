@@ -77,7 +77,7 @@ int64_t componentTypeByteSize(int componentType){
 	if(componentType == COMPONENT_TYPE_FLOAT) return 4;
 
 	println("ERROR: unsupported component type: {}", componentType);
-	println("{}", stacktrace::current());
+	std::cerr << to_string(stacktrace::current()) << std::endl;
 	exit(12035756);
 }
 
@@ -91,7 +91,7 @@ int64_t typeCount(string type){
 	if(type== "MAT4")   return 4 * 4;
 
 	println("ERROR: unsupported type: {}", type);
-	println("{}", stacktrace::current());
+	std::cerr << to_string(stacktrace::current()) << std::endl;
 	exit(12035756);
 }
 

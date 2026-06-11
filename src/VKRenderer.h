@@ -28,7 +28,7 @@
 #include "unsuck.hpp"
 #include "OrbitControls.h"
 
-#include "cuda.h"
+#include "cuda_to_hip.h"
 
 using glm::dvec3;
 using glm::dvec4;
@@ -223,7 +223,7 @@ struct VKRenderer {
 		if(result == VK_SUCCESS) return;
 
 		println("ERROR (Vulkan): {}", int(result));
-		println("{}", trace);
+		std::cerr << to_string(trace) << std::endl;
 
 		__debugbreak();
 	}

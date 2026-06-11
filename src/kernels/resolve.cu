@@ -1,16 +1,27 @@
 #define CUB_DISABLE_BF16_SUPPORT
 
 // === required by GLM ===
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "../cuda_to_hip.h"
+// Make GLM detect "CUDA" compiler to add __device__ __host__ qualifiers
+#ifndef __CUDACC__
+#define __CUDACC__
+#endif
+#define GLM_FORCE_PURE  // Disable x86 SIMD intrinsics
+#else
 #define GLM_FORCE_CUDA
+#include <cooperative_groups.h>
+#endif
 #define GLM_FORCE_NO_CTOR_INIT
+#ifndef CUDA_VERSION
 #define CUDA_VERSION 12000
+#endif
 namespace std {
 	using size_t = ::size_t;
 };
 // =======================
 
 // #include <curand_kernel.h>
-#include <cooperative_groups.h>
 // #include <cooperative_groups/memcpy_async.h>
 
 #include "./glm/glm/glm.hpp"
@@ -28,6 +39,9 @@ namespace std {
 using glm::ivec2;
 using glm::i8vec4;
 using glm::vec4;
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
 
 // uint32_t uvToMCUIndex(int width, int height, float u, float v) {
 // 	int tx = (int(u * width) % width);
@@ -55,7 +69,6 @@ vec4 getVertex(CMesh& mesh, uint32_t vertexIndex){
 
 		vec3 aabbSize = mesh.aabb.max - mesh.aabb.min;
 
-		
 		position.x = (float(X) / 65536.0f) * aabbSize.x + mesh.aabb.min.x;
 		position.y = (float(Y) / 65536.0f) * aabbSize.y + mesh.aabb.min.y;
 		position.z = (float(Z) / 65536.0f) * aabbSize.z + mesh.aabb.min.z;
@@ -78,7 +91,6 @@ vec4 getVertex_resolved(CMesh& mesh, uint32_t resolvedIndex){
 
 		vec3 aabbSize = mesh.aabb.max - mesh.aabb.min;
 
-		
 		position.x = (float(X) / 65536.0f) * aabbSize.x + mesh.aabb.min.x;
 		position.y = (float(Y) / 65536.0f) * aabbSize.y + mesh.aabb.min.y;
 		position.z = (float(Z) / 65536.0f) * aabbSize.z + mesh.aabb.min.z;
@@ -196,10 +208,12 @@ uint32_t sampleColor_linear(
 	rgba[2] = interpolated.b;
 	rgba[3] = interpolated.a;
 
-
 	return color;
 }
 
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif
 extern "C" __global__
 void kernel_dummy(
 	uint32_t* data
@@ -209,7 +223,6 @@ void kernel_dummy(
 
 	if(grid.thread_rank() == 0) *data = 123;
 }
-
 extern "C" __global__
 void kernel_clearFramebuffer(
 	uint64_t* framebuffer,
@@ -230,7 +243,9 @@ void kernel_clearFramebuffer(
 
 	framebuffer[pixelID] = pixel;
 }
-
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
 
 __device__
 float getEdlShadingFactor(uint64_t* colorbuffer, float depth, int x, int y, int distance){
@@ -267,7 +282,6 @@ float getEdlShadingFactor(uint64_t* colorbuffer, float depth, int x, int y, int 
 
 	return shade;
 }
-
 
 __device__ __forceinline__ float fractf(float x) {
 	return x - floorf(x);
@@ -317,7 +331,7 @@ __device__ vec3 ssao_normal(int x, int y, float d0, uint64_t* cb, int w, int h) 
 	float dv = use_down  ? dd : du;
 
 	// Fallback if a neighbor is missing (silhouette against sky)
-	if (isinf(dh) || isinf(dv)) return vec3(0.0f, 0.0f, -1.0f);
+	if (__builtin_isinf(dh) || __builtin_isinf(dv)) return vec3(0.0f, 0.0f, -1.0f);
 
 	vec3 P  = ssao_viewPos(float(x),       float(y),       d0, w, h);
 	vec3 Ph = ssao_viewPos(float(x + sx),  float(y),       dh, w, h);
@@ -354,7 +368,7 @@ __device__ float getSSAOShadingFactor(
 	int width, int height,
 	float /* focal_length — kept for API compatibility; use c_target.proj directly */
 ) {
-	if (isinf(center_depth) || center_depth <= 0.0f) return 1.0f;
+	if (__builtin_isinf(center_depth) || center_depth <= 0.0f) return 1.0f;
 
 	// ── Tuning ──────────────────────────────────────────────────────────────
 	const int   NUM_SAMPLES     = 32;
@@ -426,7 +440,7 @@ __device__ float getSSAOShadingFactor(
 		int  sy = clamp(int(sp.y), 0, height - 1);
 
 		float actual_depth = __uint_as_float(colorbuffer[sy * width + sx] >> 32);
-		if (isinf(actual_depth)) continue;   // sky / background
+		if (__builtin_isinf(actual_depth)) continue;   // sky / background
 
 		// Tangent-plane reference: the depth the current surface is expected to
 		// have at (sx, sy) if it were smooth.  Comparing actual_depth against
@@ -448,6 +462,9 @@ __device__ float getSSAOShadingFactor(
 	return clamp(1.0f - occlusion * INV_N * INTENSITY, 0.0f, 1.0f);
 }
 
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif
 extern "C" __global__
 void kernel_enlarge(
 	cudaSurfaceObject_t gl_desktop,
@@ -486,7 +503,7 @@ void kernel_enlarge(
 			
 			// add offsets to the depth of points, based on how far they are from the center
 			float depth = __uint_as_float(pixel >> 32);
-			if(!isinf(depth)){
+			if(!__builtin_isinf(depth)){
 				uint64_t color = pixel & 0xffffffff;
 				float f = 0.01f * abs(dx * dx) + 1.0f;
 				depth = depth * f;
@@ -523,7 +540,7 @@ void kernel_enlarge(
 
 			// add offsets to the depth of points, based on how far they are from the center
 			float depth = __uint_as_float(pixel >> 32);
-			if(!isinf(depth)){
+			if(!__builtin_isinf(depth)){
 				uint64_t color = pixel & 0xffffffff;
 				float f = 0.01f * abs(dy * dy) + 1.0f;
 				depth = depth * f;
@@ -541,18 +558,14 @@ void kernel_enlarge(
 	});
 
 }
-
-
-
-
 extern "C" __global__
 void kernel_ssaoOcclusion(
 	uint64_t* occlusionBuffer,
 	float* ssaoShadeBuffer
 ){
 	auto grid = cg::this_grid();
-	int x = grid.thread_index().x;
-	int y = grid.thread_index().y;
+	int x = (blockIdx.x * blockDim.x + threadIdx.x);
+	int y = (blockIdx.y * blockDim.y + threadIdx.y);
 
 	if(x >= c_target.width || y >= c_target.height) return;
 
@@ -566,15 +579,14 @@ void kernel_ssaoOcclusion(
 
 	occlusionBuffer[pixelID] = occ;
 }
-
 extern "C" __global__
 void kernel_ssaoBlur(
 	uint64_t* occlusionBuffer,
 	float* ssaoShadeBuffer
 ){
 	auto grid = cg::this_grid();
-	int x = grid.thread_index().x;
-	int y = grid.thread_index().y;
+	int x = (blockIdx.x * blockDim.x + threadIdx.x);
+	int y = (blockIdx.y * blockDim.y + threadIdx.y);
 
 	int width = c_target.width;
 	int height = c_target.height;
@@ -587,7 +599,7 @@ void kernel_ssaoBlur(
 	float center_depth = __uint_as_float(occlusionBuffer[centerIdx] >> 32);
 
 	// Background / sky pixel — no occlusion
-	if(isinf(center_depth)){
+	if(__builtin_isinf(center_depth)){
 		ssaoShadeBuffer[centerIdx] = 1.0f;
 		return;
 	}
@@ -635,8 +647,6 @@ void kernel_ssaoBlur(
 	ssaoShadeBuffer[centerIdx] = shade;
 	// ssaoShadeBuffer[centerIdx] = 1.0f;
 }
-
-
 extern "C" __global__
 void kernel_resolve_visbuffer_to_colorbuffer2D(
 	CMesh* meshes,
@@ -651,8 +661,8 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
-	int x = grid.thread_index().x;
-	int y = grid.thread_index().y;
+	int x = (blockIdx.x * blockDim.x + threadIdx.x);
+	int y = (blockIdx.y * blockDim.y + threadIdx.y);
 	// int pixelID = x + c_target.width * y;
 	int pixelID = toFramebufferIndex(x, y, c_target.width);
 
@@ -723,7 +733,7 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 	uint32_t color = 0;
 	uint8_t *rgb = (uint8_t *)&color;
 
-	if(!isinf(depth)){
+	if(!__builtin_isinf(depth)){
 		CMesh mesh = meshes[meshIndex];
 		uint32_t triangleIndex = totalTriangleIndex - mesh.cummulativeTriangleCount;
 
@@ -767,7 +777,6 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 		vec2 uv_b = getUV_resolved(mesh, i1);
 		vec2 uv_c = getUV_resolved(mesh, i2);
 		// ---------------------------------------------------
-
 
 		// mat4 worldView = c_target.view * mesh.world;
 		vec3 a_world = mesh.world * vec4(a_object, 1.0f);
@@ -1030,8 +1039,6 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 			// else if(numFragments <= 262144)  color = SCHEME_SPECTRAL[1];
 			// else                            color = SCHEME_SPECTRAL[0];
 
-
-
 		}else{
 			color = 0xff0000ff;
 		}
@@ -1064,8 +1071,8 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 
 			bool isInside = true;
 
-			for(int dx : {-1, 0, 1})
-			for(int dy : {-1, 0, 1})
+			for(int dx = -1; dx <= 1; dx++)
+			for(int dy = -1; dy <= 1; dy++)
 			{
 
 				int nx = clamp(x + dx, 0, c_target.width - 1);
@@ -1115,8 +1122,8 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 		if(p_00 != p_10) color = 0xffff00ff;
 		if(p_00 != p_01) color = 0xffff00ff;
 
-		for(int dx : {0, 1})
-		for(int dy : {0, 1})
+		for(int dx = 0; dx <= 1; dx++)
+		for(int dy = 0; dy <= 1; dy++)
 		// for(int dx : {-1, 0, 1})
 		// for(int dy : {-1, 0, 1})
 		{
@@ -1132,8 +1139,6 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 	// 	color = 0xffff00ff;
 	// }
 
-	
-
 	if(depth != Infinity){
 		uint64_t udepth = __float_as_uint(depth);
 		uint64_t pixel = (udepth << 32) | color;
@@ -1142,7 +1147,6 @@ void kernel_resolve_visbuffer_to_colorbuffer2D(
 		c_target.colorbuffer[pixelID] = uint64_t(__float_as_uint(INFINITY)) << 32 | 0;
 	}
 }
-
 extern "C" __global__
 void kernel_resolve_colorbuffer_to_opengl_2D(
 	cudaSurfaceObject_t gl_desktop,
@@ -1163,8 +1167,8 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 	RenderTarget& source = c_target;
 
 	if(width == source.width && height == source.height){
-		int x = grid.thread_index().x;
-		int y = grid.thread_index().y;
+		int x = (blockIdx.x * blockDim.x + threadIdx.x);
+		int y = (blockIdx.y * blockDim.y + threadIdx.y);
 		int pixelID = toFramebufferIndex(x, y, source.width);
 
 		if(x >= source.width) return;
@@ -1193,7 +1197,7 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 				ssao = ssaoShadeBuffer[pixelID] * 0.4f + 0.6f;
 			}
 
-			if(isinf(depth)) sampleColor = backgroundColor;
+			if(__builtin_isinf(depth)) sampleColor = backgroundColor;
 
 			float shade = edl * ssao;
 
@@ -1253,10 +1257,9 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 			surf2Dwrite(color, gl_desktop, x * 4, y);
 		}
 
-
 	}else{
-		int target_x = grid.thread_index().x;
-		int target_y = grid.thread_index().y;
+		int target_x = (blockIdx.x * blockDim.x + threadIdx.x);
+		int target_y = (blockIdx.y * blockDim.y + threadIdx.y);
 		int pixelID = toFramebufferIndex(target_x, target_y, width);
 
 		if(target_x >= width) return;
@@ -1283,7 +1286,7 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 			color.g += (C >>  8) & 0xff;
 			color.b += (C >> 16) & 0xff;
 
-			if(isinf(depth)){
+			if(__builtin_isinf(depth)){
 				color.r += (BACKGROUND_COLOR >>  0) & 0xff;
 				color.g += (BACKGROUND_COLOR >>  8) & 0xff;
 				color.b += (BACKGROUND_COLOR >> 16) & 0xff;
@@ -1310,7 +1313,6 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 			ssao = 1.0f;
 		}
 		
-
 		float shade = edl * ssao;
 		color = shade * color / float(numSamples);
 		uint32_t C;
@@ -1323,8 +1325,6 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 		surf2Dwrite(C, gl_desktop, target_x * 4, target_y);
 	}
 }
-
-
 extern "C" __global__
 void kernel_resolve_colorbuffer_to_screenshot(
 	uint32_t* screenshot,
@@ -1340,8 +1340,8 @@ void kernel_resolve_colorbuffer_to_screenshot(
 
 	RenderTarget& source = c_target;
 
-	int x = grid.thread_index().x;
-	int y = grid.thread_index().y;
+	int x = (blockIdx.x * blockDim.x + threadIdx.x);
+	int y = (blockIdx.y * blockDim.y + threadIdx.y);
 	int pixelID = toFramebufferIndex(x, y, source.width);
 
 	if(x >= source.width) return;
@@ -1363,7 +1363,7 @@ void kernel_resolve_colorbuffer_to_screenshot(
 		ssao = ssaoShadeBuffer[pixelID] * 0.4f + 0.6f;
 	}
 
-	if(isinf(depth)) color = backgroundColor;
+	if(__builtin_isinf(depth)) color = backgroundColor;
 
 	float shade = edl * ssao;
 	uint8_t* rgba = (uint8_t*)&color;
@@ -1375,7 +1375,9 @@ void kernel_resolve_colorbuffer_to_screenshot(
 	screenshot[pixelID] = color;
 	
 }
-
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
 
 uint32_t sampleJpeg_nearest(
 	uint32_t texID,
@@ -1399,7 +1401,6 @@ uint32_t sampleJpeg_nearest(
 	// int mcu = tx / 16 + ty / 16 * tex->width / 16;
 	// uint32_t key = ((mcu & 0xffff) << 16) | (texID & 0xffff);
 	uint32_t key = pack_mcuidx_textureidx_miplevel(mcu, texID, mipLevel);
-
 
 	uint32_t value;
 	if(decodedMcuMap.get(key, &value)){
@@ -1573,6 +1574,9 @@ uint32_t sampleJpeg_linear(
 	return color;
 }
 
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif
 extern "C" __global__
 void kernel_resolve_jpeg(
 	CMesh* meshes,
@@ -1588,8 +1592,8 @@ void kernel_resolve_jpeg(
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
-	int x = grid.thread_index().x;
-	int y = grid.thread_index().y;
+	int x = (blockIdx.x * blockDim.x + threadIdx.x);
+	int y = (blockIdx.y * blockDim.y + threadIdx.y);
 	int pixelID = toFramebufferIndex(x, y, c_target.width);
 
 	if(x >= c_target.width) return;
@@ -1659,7 +1663,7 @@ void kernel_resolve_jpeg(
 	uint32_t color = 0;
 	uint8_t *rgb = (uint8_t *)&color;
 
-	if(!isinf(depth)){
+	if(!__builtin_isinf(depth)){
 		CMesh mesh = meshes[meshIndex];
 		uint32_t triangleIndex = totalTriangleIndex - mesh.cummulativeTriangleCount;
 
@@ -1703,7 +1707,6 @@ void kernel_resolve_jpeg(
 		vec2 uv_b = getUV_resolved(mesh, i1);
 		vec2 uv_c = getUV_resolved(mesh, i2);
 		// ---------------------------------------------------
-
 
 		// mat4 worldView = c_target.view * mesh.world;
 		vec3 a_world = mesh.world * vec4(a_object, 1.0f);
@@ -1970,8 +1973,8 @@ void kernel_resolve_jpeg(
 
 			bool isInside = true;
 
-			for(int dx : {-1, 0, 1})
-			for(int dy : {-1, 0, 1})
+			for(int dx = -1; dx <= 1; dx++)
+			for(int dy = -1; dy <= 1; dy++)
 			{
 
 				int nx = clamp(x + dx, 0, c_target.width - 1);
@@ -1994,7 +1997,6 @@ void kernel_resolve_jpeg(
 			}
 		}
 		
-
 	}else{
 		color = 0;
 
@@ -2022,8 +2024,8 @@ void kernel_resolve_jpeg(
 
 		// for(int dx : {-1, 0, 1})
 		// for(int dy : {-1, 0, 1})
-		for(int dx : {0, 1})
-		for(int dy : {0, 1})
+		for(int dx = 0; dx <= 1; dx++)
+		for(int dy = 0; dy <= 1; dy++)
 		{
 			int pid_neighbor = clamp(toFramebufferIndex(x + dx, y + dy, c_target.width), 0u, numPixels - 1);
 			uint32_t p_neighbor = c_target.framebuffer[pid_neighbor] & 0xffffffff;

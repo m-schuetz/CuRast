@@ -35,24 +35,64 @@ function(ADD_GLM TARGET_NAME)
 endfunction()
 
 function(ADD_CUDA TARGET_NAME)
-	find_package(CUDAToolkit 13.1 REQUIRED)
-	find_library(CUDA_DEVRTLIB NAMES cudadevrt libcudadevrt PATHS "${CUDAToolkit_LIBRARY_DIR}")
+	if(USE_HIP)
+		# HIP/ROCm configuration
+		find_package(hip REQUIRED)
+		find_package(hiprtc REQUIRED)
 
-	MESSAGE(STATUS "CUDAToolkit_INCLUDE_DIRS:     " ${CUDAToolkit_INCLUDE_DIRS})
-	MESSAGE(STATUS "CUDAToolkit_BIN_DIR:          " ${CUDAToolkit_BIN_DIR})
-	MESSAGE(STATUS "CUDAToolkit_LIBRARY_DIR:      " ${CUDAToolkit_LIBRARY_DIR})
-	MESSAGE(STATUS "CUDAToolkit_LIBRARY_ROOT:     " ${CUDAToolkit_LIBRARY_ROOT})
-	MESSAGE(STATUS "CUDAToolkit_NVCC_EXECUTABLE:  " ${CUDAToolkit_NVCC_EXECUTABLE})
-	MESSAGE(STATUS "CUDA_DEVRTLIB:                " ${CUDA_DEVRTLIB})
+		MESSAGE(STATUS "HIP found: ${hip_FOUND}")
+		MESSAGE(STATUS "HIP include dirs: ${hip_INCLUDE_DIRS}")
 
-	target_include_directories(${TARGET_NAME} PRIVATE CUDAToolkit_INCLUDE_DIRS)
-	target_link_libraries(${TARGET_NAME} PRIVATE
-		CUDA::cuda_driver
-		CUDA::nvrtc
-		CUDA::nvJitLink
-	)
+		# Link HIP runtime and hiprtc. Use hip::host for linking only,
+		# not hip::device which adds compile flags to all sources.
+		target_include_directories(${TARGET_NAME} PRIVATE ${hip_INCLUDE_DIRS})
+		target_link_libraries(${TARGET_NAME} PRIVATE
+			amdhip64
+			hiprtc::hiprtc
+		)
 
-	target_compile_definitions(${TARGET_NAME} PRIVATE CUDA_DEVRTLIB="${CUDA_DEVRTLIB}")
+		# Mark .cu files as HIP language
+		get_target_property(SOURCES ${TARGET_NAME} SOURCES)
+		foreach(SRC ${SOURCES})
+			if(SRC MATCHES "\\.cu$")
+				set_source_files_properties(${SRC} PROPERTIES LANGUAGE HIP)
+			endif()
+		endforeach()
+
+		target_compile_definitions(${TARGET_NAME} PRIVATE USE_HIP=1)
+
+		if(WIN32)
+			# On Windows, MSVC's C++23 <cmath> (via _CLANG_BUILTIN1) marks isfinite/
+			# isinf/isnan/isnormal as __host__ __device__ builtins BEFORE the HIP
+			# pre-included runtime wrapper can forward-declare them as __device__-only.
+			# The overload conflict disappears in C++20 mode (MSVC does not apply the
+			# builtin attribute in C++20). Use C++20 for HIP TUs; host CXX stays C++23.
+			# Also define WIN32 (clang only defines _WIN32; some upstream code checks WIN32).
+			target_compile_options(${TARGET_NAME} PRIVATE
+				$<$<COMPILE_LANGUAGE:HIP>:-std=c++20>)
+			target_compile_definitions(${TARGET_NAME} PRIVATE WIN32)
+		endif()
+	else()
+		# CUDA configuration
+		find_package(CUDAToolkit 13.1 REQUIRED)
+		find_library(CUDA_DEVRTLIB NAMES cudadevrt libcudadevrt PATHS "${CUDAToolkit_LIBRARY_DIR}")
+
+		MESSAGE(STATUS "CUDAToolkit_INCLUDE_DIRS:     " ${CUDAToolkit_INCLUDE_DIRS})
+		MESSAGE(STATUS "CUDAToolkit_BIN_DIR:          " ${CUDAToolkit_BIN_DIR})
+		MESSAGE(STATUS "CUDAToolkit_LIBRARY_DIR:      " ${CUDAToolkit_LIBRARY_DIR})
+		MESSAGE(STATUS "CUDAToolkit_LIBRARY_ROOT:     " ${CUDAToolkit_LIBRARY_ROOT})
+		MESSAGE(STATUS "CUDAToolkit_NVCC_EXECUTABLE:  " ${CUDAToolkit_NVCC_EXECUTABLE})
+		MESSAGE(STATUS "CUDA_DEVRTLIB:                " ${CUDA_DEVRTLIB})
+
+		target_include_directories(${TARGET_NAME} PRIVATE CUDAToolkit_INCLUDE_DIRS)
+		target_link_libraries(${TARGET_NAME} PRIVATE
+			CUDA::cuda_driver
+			CUDA::nvrtc
+			CUDA::nvJitLink
+		)
+
+		target_compile_definitions(${TARGET_NAME} PRIVATE CUDA_DEVRTLIB="${CUDA_DEVRTLIB}")
+	endif()
 endfunction()
 
 function(ADD_VULKAN TARGET_NAME)

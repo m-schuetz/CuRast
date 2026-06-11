@@ -1,17 +1,26 @@
 #define CUB_DISABLE_BF16_SUPPORT
 
 // === required by GLM ===
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "../cuda_to_hip.h"
+// Make GLM detect "CUDA" compiler to add __device__ __host__ qualifiers
+#ifndef __CUDACC__
+#define __CUDACC__
+#endif
+#define GLM_FORCE_PURE  // Disable x86 SIMD intrinsics
+#else
 #define GLM_FORCE_CUDA
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
+#endif
 #define GLM_FORCE_NO_CTOR_INIT
+#ifndef CUDA_VERSION
 #define CUDA_VERSION 12000
+#endif
 namespace std {
 	using size_t = ::size_t;
 };
 // =======================
-
-// #include <curand_kernel.h>
-#include <cooperative_groups.h>
-#include <cooperative_groups/memcpy_async.h>
 
 #include "./glm/glm/glm.hpp"
 #include "./glm/glm/gtc/matrix_transform.hpp"
@@ -179,7 +188,13 @@ void kernel_drawBoundingBoxes(
 	auto block = cg::this_thread_block();
 
 	__shared__ int sh_meshIndex;
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+	// HIP doesn't support __shared__ vars with constructors; use raw storage
+	__shared__ alignas(CMesh) char sh_mesh_storage[sizeof(CMesh)];
+	CMesh& sh_mesh = *reinterpret_cast<CMesh*>(sh_mesh_storage);
+#else
 	__shared__ CMesh sh_mesh;
+#endif
 
 	if (block.thread_rank() == 0){
 		sh_meshIndex = 0;

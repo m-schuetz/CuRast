@@ -16,7 +16,7 @@
 #include <string>
 #include <sstream>
 #include <functional>
-#include <print>
+#include "compat_print.h"
 #include "locale"
 #include <codecvt>
 #include <cstddef>

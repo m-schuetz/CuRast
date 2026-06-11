@@ -23,6 +23,13 @@
 #else
 	constexpr float Infinity = __builtin_bit_cast(float, 0x7f800000);
 	#include "./jpeg/HashMap.cuh"
+	#if defined(__HIPCC_RTC__)
+	// the hiprtc device pass mirrors the __CUDA_ARCH__ branch's jpeg interface
+	#include "../jpeg/JptInterface.cuh"
+	#endif
+#endif
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
 #endif
 
 
@@ -74,12 +81,12 @@ struct Box3 {
 	}
 
 	void extend(vec3 v){
-		this->min.x = ::min(this->min.x, v.x);
-		this->min.y = ::min(this->min.y, v.y);
-		this->min.z = ::min(this->min.z, v.z);
-		this->max.x = ::max(this->max.x, v.x);
-		this->max.y = ::max(this->max.y, v.y);
-		this->max.z = ::max(this->max.z, v.z);
+		this->min.x = fminf(this->min.x, v.x);
+		this->min.y = fminf(this->min.y, v.y);
+		this->min.z = fminf(this->min.z, v.z);
+		this->max.x = fmaxf(this->max.x, v.x);
+		this->max.y = fmaxf(this->max.y, v.y);
+		this->max.z = fmaxf(this->max.z, v.z);
 	}
 
 	Box3 transform(mat4 matrix){
@@ -326,3 +333,6 @@ struct RasterArgs{
 };
 
 extern __constant__ RenderTarget c_target;
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif

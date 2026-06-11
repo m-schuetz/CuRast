@@ -1,17 +1,28 @@
 #define CUB_DISABLE_BF16_SUPPORT
 
 // === required by GLM ===
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "../cuda_to_hip.h"
+// Make GLM detect "CUDA" compiler to add __device__ __host__ qualifiers
+#ifndef __CUDACC__
+#define __CUDACC__
+#endif
+#define GLM_FORCE_PURE  // Disable x86 SIMD intrinsics
+#else
 #define GLM_FORCE_CUDA
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
+#endif
 #define GLM_FORCE_NO_CTOR_INIT
+#ifndef CUDA_VERSION
 #define CUDA_VERSION 12000
+#endif
 namespace std {
 	using size_t = ::size_t;
 };
 // =======================
 
 // #include <curand_kernel.h>
-#include <cooperative_groups.h>
-#include <cooperative_groups/memcpy_async.h>
 
 #include "./libs/glm/glm/glm.hpp"
 #include "./libs/glm/glm/gtc/matrix_transform.hpp"
@@ -29,6 +40,9 @@ using glm::i8vec4;
 using glm::vec4;
 
 constexpr bool ENABLE_FRAGCOUNTING = false;
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
 
 // Some compile-time template specializations here because for perf reasons, 
 // we need each variation of getVertex to be a separately compiled function.
@@ -314,6 +328,30 @@ void rasterize(
 
 template<IndexFetch INDEXING, Compression COMPRESSION, Instancing INSTANCING>
 void stage1_drawSmallTriangles(RasterArgs& args){
+#if defined(USE_HIP)
+	auto block = cg::this_thread_block();
+
+	// Counters and dbg_fragcount are zeroed by the CPU before this kernel is
+	// launched (see drawTrianglesVisbuffer), so no grid.sync() is needed and
+	// this kernel can be launched non-cooperatively.
+
+	// Initialize block state
+	__shared__ int sh_blockBatchIndex;
+	__shared__ int sh_blockLocalBatchIndex;
+	__shared__ int sh_meshIndex;
+	// HIP doesn't support __shared__ vars with constructors; use raw storage
+	__shared__ alignas(CMesh) char sh_mesh_storage[sizeof(CMesh)];
+	CMesh& sh_mesh = *reinterpret_cast<CMesh*>(sh_mesh_storage);
+
+	if (block.thread_rank() == 0){
+		sh_blockBatchIndex = 0;
+		sh_blockLocalBatchIndex = 0;
+		sh_meshIndex = 0;
+		sh_mesh = args.meshes[0];
+	}
+
+	block.sync();
+#else
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
@@ -341,6 +379,7 @@ void stage1_drawSmallTriangles(RasterArgs& args){
 	}
 
 	grid.sync();
+#endif
 
 	// LOOP THROUGH TRIANGLES
 	while (true){
@@ -429,11 +468,23 @@ void stage1_drawSmallTriangles(RasterArgs& args){
 
 template<IndexFetch INDEXING, Compression COMPRESSION>
 void stage2_drawMediumTriangles(RasterArgs& args) {
+#if defined(USE_HIP)
+	auto block = cg::this_thread_block();
+	auto warp = cg::tiled_partition<32>(block);
+
+	// No grid.sync() needed: stage2 is a separate kernel launched after stage1
+	// completes. All of stage1's writes to nontrivialTrianglesCounter/List are
+	// visible before this kernel starts (via hipDeviceSynchronize between the two
+	// cooperative launches). The grid.sync() that was here was redundant and
+	// caused a deadlock on gfx1100 when launched at full occupancy (16 blocks/SM
+	// x 35 SMs = 560 blocks exceeds what the driver can schedule simultaneously).
+#else
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 	auto warp = cg::tiled_partition<32>(block);
 
 	grid.sync();
+#endif
 
 	while (true) {
 		uint32_t nontrivialTriangleIndex;
@@ -620,7 +671,9 @@ void stage2_drawMediumTriangles(RasterArgs& args) {
 
 template<IndexFetch INDEXING, Compression COMPRESSION>
 void stage3_drawHugeTriangles(RasterArgs args){
+#if !defined(USE_HIP)
 	auto grid = cg::this_grid();
+#endif
 	auto block = cg::this_thread_block();
 
 	__shared__ uint32_t hugeTriIndex;
@@ -811,6 +864,9 @@ void stage3_drawHugeTriangles(RasterArgs args){
 
 
 // INDEXBUFFER; UNCOMPRESSED
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif
 extern "C" __global__
 void kernel_stage1_drawSmallTriangles_indexbuffer_uncompressed(RasterArgs args){
 	stage1_drawSmallTriangles<IndexFetch::INDEXBUFFER, Compression::UNCOMPRESSED, Instancing::NO>(args);
@@ -825,7 +881,6 @@ extern "C" __global__
 void kernel_stage3_drawHugeTriangles_indexbuffer_uncompressed(RasterArgs args) {
 	stage3_drawHugeTriangles<IndexFetch::INDEXBUFFER, Compression::UNCOMPRESSED>(args);
 }
-
 
 // INDEXBUFFER; COMPRESSED
 extern "C" __global__
@@ -843,7 +898,6 @@ void kernel_stage3_drawHugeTriangles_indexbuffer_compressed(RasterArgs args) {
 	stage3_drawHugeTriangles<IndexFetch::INDEXBUFFER, Compression::IX_PU16>(args);
 }
 
-
 // DIRECT INDEXING; UNCOMPRESSED
 extern "C" __global__
 void kernel_stage1_drawSmallTriangles_noindexbuffer_uncompressed(RasterArgs args){
@@ -859,7 +913,6 @@ extern "C" __global__
 void kernel_stage3_drawHugeTriangles_noindexbuffer_uncompressed(RasterArgs args) {
 	stage3_drawHugeTriangles<IndexFetch::DIRECT, Compression::UNCOMPRESSED>(args);
 }
-
 
 // DIRECT INDEXUNG; COMPRESSED
 extern "C" __global__
@@ -877,10 +930,6 @@ void kernel_stage3_drawHugeTriangles_noindexbuffer_compressed(RasterArgs args) {
 	stage3_drawHugeTriangles<IndexFetch::DIRECT, Compression::IX_PU16>(args);
 }
 
-
-
-
-
 // INDEXBUFFER; UNCOMPRESSED; INSTANCED
 extern "C" __global__
 void kernel_stage1_drawSmallTriangles_indexbuffer_uncompressed_instanced(RasterArgs args){
@@ -892,4 +941,3 @@ extern "C" __global__
 void kernel_stage1_drawSmallTriangles_indexbuffer_compressed_instanced(RasterArgs args){
 	stage1_drawSmallTriangles<IndexFetch::INDEXBUFFER, Compression::IX_PU16, Instancing::YES>(args);
 }
-

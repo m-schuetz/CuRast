@@ -60,9 +60,30 @@ Compile and run with visual Studio 2026. Drag and drop glb or gltf files to load
 
 ### Linux
 
-TODO. 
+The Linux build uses mmap for [memory mapping](./src/MappedFile.h) and `O_DIRECT` unbuffered reads in [unsuck_platform_specific.cpp](./src/unsuck_platform_specific.cpp), replacing the Windows-API paths used on Windows.
 
-Main challenge: We're using the windows API for [memory mapping](./src/MappedFile.h) (easily read from files) and [unbuffered IO](./src/unsuck_platform_specific.cpp#L242) (efficiently read from files). mmap on linux should be straightforward, but what about fast sequential SSD reads without buffering overhead? io_uring?
+### AMD GPUs (ROCm/HIP)
+
+CuRast also builds and runs on AMD GPUs with ROCm/HIP. The CUDA driver API and the nvrtc/nvJitLink runtime-compilation path are mapped to the HIP driver API and hiprtc. Enable it with the `USE_HIP` CMake option.
+
+Dependencies:
+* ROCm 7.2 or newer (provides hipcc/amdclang++ and hiprtc)
+* An AMD GPU. Validated on gfx90a (CDNA2), gfx1100 (RDNA3), and gfx1201 (RDNA4).
+
+Configure and build, selecting the target architecture with `CMAKE_HIP_ARCHITECTURES`:
+
+```
+cmake -S . -B build -DUSE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx90a
+cmake --build build -j
+```
+
+A headless benchmark mode renders a model to `bench_render.png` without a window or Vulkan, which is useful for validation on machines without a display:
+
+```
+./build/CuRast --bench ./example_donaukanal_urania.glb 1920 1080 30
+```
+
+One limitation applies to the ROCm/HIP build (see [Known Issues](#known-issues)): HIP-Vulkan texture interop is unavailable.
 
 ## Getting Started
 
@@ -142,6 +163,8 @@ Some test data sets we've been using, with download link if available.
 - If compiled with Vulkan support (see CuRastSettings.h), you can only switch the rasterizer from CUDA to Vulkan, but not back. That is because we implemented converting from CUDA textures to Vulkan, but not the other way around.
 - Can only drag&drop one glb per session. Needs restart to load a new glb.
 - We don't handle "frames in flight" yet. While draw data is assembled on the CPU, the GPU may be idle and wait. In the future, while the GPU finishes drawing the current frame, the CPU should already be preparing the next frame. 
+- On the ROCm/HIP build, HIP-Vulkan texture interop is unavailable: `hipExternalMemoryGetMappedMipmappedArray` is not exported by the ROCm 7.2 HIP runtime, so the CUDA-to-Vulkan mipmapped-array export is stubbed. Core rasterization and the headless `--bench` path work without it; the Vulkan display path that shares the desktop texture with HIP does not.
+- On the ROCm/HIP build, kernel launches dispatched from inside the module-launch helper intermittently memory-fault on gfx90a (ROCm 7.2.1), while the same dispatch sequence inlined at the call site is reliable. This appears to be a ROCm runtime issue; until it is resolved the rasterization hot paths dispatch their launches inline as a workaround.
 
 ## References and Further Reads
 

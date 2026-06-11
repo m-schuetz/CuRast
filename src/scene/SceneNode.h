@@ -2,8 +2,7 @@
 
 #include <string>
 #include <format>
-#include "cuda.h"
-#include "cuda_runtime.h"
+#include "../cuda_to_hip.h"
 
 #include <glm/glm.hpp>
 #include <glm/common.hpp>

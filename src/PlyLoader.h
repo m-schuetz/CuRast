@@ -8,9 +8,13 @@
 #include "scene/SceneNode.h"
 #include "scene/SNTriangles.h"
 #include "MemoryManager.h"
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "HipModularProgram.h"
+using CudaModularProgram = HipModularProgram;
+#else
 #include "CudaModularProgram.h"
+#endif
 #include "ThreadPool.h"
-#include "CudaModularProgram.h"
 #include "Timer.h"
 #include "BitEdit.h"
 #include "kernels/textureTools.cuh"
@@ -117,7 +121,7 @@ namespace PlyLoader{
 		// }
 
 		
-		string strProbableHeader((const char*)mappedFile->data, min(fs::file_size(path), 10'000llu));
+		string strProbableHeader((const char*)mappedFile->data, std::min<uint64_t>(fs::file_size(path), 10'000llu));
 		size_t pos_headerToken = strProbableHeader.find("end_header");
 		if(pos_headerToken == string::npos){
 			println("could not find end of header in ply file");
