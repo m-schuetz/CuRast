@@ -283,8 +283,8 @@ void initScene() {
 			.skipNormals = true, // We need that previous VRAM
 			.skipVertexColors = true,
 			.compress = true,
-			.useJpegTextures = false,
-			.imageDivisionFactor = 2
+			.useJpegTextures = true,
+			// .imageDivisionFactor = 2
 		});
 		editor->scene.world->children.push_back(glb->glbNode);
 		
@@ -296,7 +296,7 @@ void initScene() {
 	};
 
 	// createCube();
-	// loadZorah();
+	loadZorah();
 	// loadGraffiti();
 	// loadHakone();
 	// loadHakoneInstances();
@@ -443,16 +443,99 @@ int main(int argc, char** argv){
 
 	VKRenderer::loop(
 		[&]() {
+			
+			static bool animating = false;
+			static int animationFrameCounter = 0;
+			if(!animating && Runtime::keyStates[32] != 0){
+				animating = true;
+				animationFrameCounter = 0;
+			}
+			if(animating){
+				// Hakone
+				// CameraParams start;
+				// start.yaw    = -7.070;
+				// start.pitch  = -0.515;
+				// start.radius = 37.564;
+				// start.target = { 17.170, -8.448, 8.863};
+				
+				// CameraParams end;
+				// end.yaw    = -7.070;
+				// end.pitch  = -0.515;
+				// end.radius = 37.564;
+				// end.target = { 31.713, -22.220, 9.877};
+				// double seconds = 1.0;
+				
+				// Venice
+				// CameraParams start;
+				// start.yaw    = -23.948;
+				// start.pitch  = -0.441;
+				// start.radius = 83.980;
+				// start.target = { -446.897, -588.551, 52.450};
+				
+				// CameraParams end;
+				// end.yaw    = -23.948;
+				// end.pitch  = -0.441;
+				// end.radius = 83.980;
+				// end.target = { -11.754, 437.630, 17.067};
+				// double seconds = 30.0;
+				
+				// Zorah
+				// CameraParams start;
+				// start.yaw    = -17.304;
+				// start.pitch  = -0.247;
+				// start.radius = 8.184;
+				// start.target = { 44.653, -0.056, 4.378};
+				
+				// CameraParams end;
+				// end.yaw    = -17.017;
+				// end.pitch  = -0.440;
+				// end.radius = 0.516;
+				// end.target = { 18.603, -3.256, 3.434};
+				// double seconds = 4;
+				
+				// Zorah
+				CameraParams start;
+				start.yaw    = -17.017;
+				start.pitch  = -0.440;
+				start.radius = 0.516;
+				start.target = { 18.603, -3.256, 3.434};
+				
+				CameraParams end;
+				end.yaw    = -17.017 + 6.2831853;
+				end.pitch  = -0.440;
+				end.radius = 0.516;
+				end.target = { 18.603, -3.256, 3.434};
+				double seconds = 4;
+				
+				
+				double numFrames = seconds * 60.0;
+				double u = animationFrameCounter / numFrames;
+				// u = u * u * (3.0 - 2.0 * u); // Cubuc easing
+				
+				Runtime::controls->yaw    = (1.0 - u) * start.yaw + u * end.yaw;
+				Runtime::controls->pitch  = (1.0 - u) * start.pitch + u * end.pitch;
+				Runtime::controls->radius = (1.0 - u) * start.radius + u * end.radius;
+				Runtime::controls->target = (1.0 - u) * start.target + u * end.target;
+				
+				animationFrameCounter++;
+				
+				CuRastSettings::requestScreenshot = make_shared<string>("");
+				
+				if(animationFrameCounter == numFrames){
+					animating = false;	
+				}
+			}
+			
 			update();
 			CuRast::instance->update();
 			
-			DeviceState* state = CuRast::instance->deviceState;
-			double stage1_millies = double(state->nanotime_stage_1 - state->nanotime_start) / 1'000'000.0;
-			double stage2_millies = double(state->nanotime_stage_2 - state->nanotime_stage_1) / 1'000'000.0;
-			double stage3_millies = double(state->nanotime_stage_3 - state->nanotime_stage_2) / 1'000'000.0;
-			Runtime::debugValues["stage 1"] = format("{:.3f}", stage1_millies);
-			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
-			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
+			// DeviceState* state = CuRast::instance->deviceState;
+			// double stage1_millies = double(state->nanotime_stage_1 - state->nanotime_start) / 1'000'000.0;
+			// double stage2_millies = double(state->nanotime_stage_2 - state->nanotime_stage_1) / 1'000'000.0;
+			// double stage3_millies = double(state->nanotime_stage_3 - state->nanotime_stage_2) / 1'000'000.0;
+			// Runtime::debugValues["stage 1"] = format("{:.3f}", stage1_millies);
+			// Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
+			// Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 		},
 		[&]() {CuRast::instance->render();},
 		[&]() {CuRast::instance->postFrame();}

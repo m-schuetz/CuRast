@@ -522,3 +522,6 @@ make.bat
 dbg.glb.json
 screenshots/*
 benchmarks/*
+frames_venice_wireframe_1080p/*
+frames_venice_1080p/*
+zorah_zoomin/*

@@ -4,6 +4,7 @@
 #include "CuRast.h"
 #include "VKRenderer.h"
 #include "TextureManager.h"
+#include "Tween.h"
 
 using json = nlohmann::json;
 
@@ -153,6 +154,8 @@ void CuRast::drawGUI() {
 void CuRast::update(){
 
 	Runtime::timings.newFrame();
+	
+	Tween::update();
 	
 	string strfps = format("CuRast | FPS: {}", int(VKRenderer::fps));
 	glfwSetWindowTitle(VKRenderer::window, strfps.c_str());

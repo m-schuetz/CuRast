@@ -36,6 +36,13 @@ using glm::dvec3;
 using glm::mat4;
 using glm::dmat4;
 
+struct CameraParams{
+	double yaw = 0.0;
+	double pitch = 0.0;
+	double radius = 2;
+	glm::dvec3 target = {0.0, 0.0, 0.0};
+};
+
 struct CuRast{
 	
 	inline static CuRast* instance;
