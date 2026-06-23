@@ -8,11 +8,9 @@ option(USE_HIP "Build with HIP for AMD GPUs" OFF)
 project(${TARGET_NAME} LANGUAGES CXX)
 
 if(USE_HIP)
+    # enable_language(HIP) honors -DCMAKE_HIP_ARCHITECTURES, else auto-detects the
+    # host GPU, else errors on a no-GPU host.
     enable_language(HIP)
-    # Default to gfx90a if not specified; let -DCMAKE_HIP_ARCHITECTURES override
-    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES OR CMAKE_HIP_ARCHITECTURES STREQUAL "")
-        set(CMAKE_HIP_ARCHITECTURES "gfx90a")
-    endif()
     add_compile_definitions(USE_HIP=1)
 else()
     enable_language(CUDA)
