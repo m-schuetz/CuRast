@@ -505,12 +505,12 @@ int main(int argc, char** argv){
 				end.pitch  = -0.440;
 				end.radius = 0.516;
 				end.target = { 18.603, -3.256, 3.434};
-				double seconds = 4;
+				double seconds = 8;
 				
 				
 				double numFrames = seconds * 60.0;
 				double u = animationFrameCounter / numFrames;
-				// u = u * u * (3.0 - 2.0 * u); // Cubuc easing
+				// u = u * u * (3.0 - 2.0 * u); // Cubic easing
 				
 				Runtime::controls->yaw    = (1.0 - u) * start.yaw + u * end.yaw;
 				Runtime::controls->pitch  = (1.0 - u) * start.pitch + u * end.pitch;
