@@ -27,8 +27,8 @@
 
 using namespace std; // YOLO
 
+// Runs on a separate thread, in parallel to window and Vulkan setup (see main)
 void initCuda() {
-	CURuntime::device = 0;
 	CURuntime::assertCudaSuccess(cudaSetDevice(CURuntime::device));
 	CURuntime::assertCudaSuccess(cudaFree(nullptr)); // creates the context
 
@@ -82,11 +82,19 @@ int main(int argc, char** argv){
 
 	std::locale::global(getSaneLocale());
 
-	initCuda();
+	// Creating the CUDA context takes ~300ms, so we do it in parallel to setting up the window and Vulkan. 
+	// Until the thread is joined, the main thread may only use CUDA calls that don't need the context, 
+	// e.g., cudaGetDeviceProperties() to find the Vulkan device that matches the CUDA device.
+	std::thread cudaInitThread(initCuda);
+
 	VKRenderer::init();
 	CuRast::setup();
 
 	initScene();
+
+	// The render loop launches kernels, so the context must be ready. 
+	cudaInitThread.join();
+	CURuntime::assertCudaSuccess(cudaSetDevice(CURuntime::device));
 
 	VKRenderer::loop(
 		[&]() {CuRast::instance->update();},
