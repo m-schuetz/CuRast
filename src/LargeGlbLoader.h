@@ -417,7 +417,7 @@ namespace largeGlb{
 			for(int i = 0; i < pool.numThreads; i++){
 				PinnedBuffer pinnedBuffer;
 				pinnedBuffer.size = roundUp(
-					max(int64_t(largestIndexbufferSize), 100'000'000ll), 
+					max<int64_t>(largestIndexbufferSize, 100'000'000ll), 
 					file->sectorSize) + file->sectorSize;
 
 				auto result = cuMemAllocHost(&pinnedBuffer.buffer, pinnedBuffer.size);

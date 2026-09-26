@@ -98,6 +98,7 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 }
 
 #include "CuRast_vulkanRender.h"
+#include "scene/LasfileNode.h"
 
 void drawPoints(Scene* scene, View view, RenderTarget& target){
 	
@@ -130,6 +131,66 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 	
 	auto& dvlist = Runtime::debugValueList;
 	dvlist.push_back({"num points", format("{:L}", totalPoints)});
+	
+}
+
+// Renders LasfileNodes directly from their memory-mapped files. 
+// Requires GPU access to pageable host memory (e.g. HMM on linux).
+void drawLasPoints(Scene* scene, View view, RenderTarget& target){
+	
+	static CudaModularProgram* prog = new CudaModularProgram({
+		.modules = {"./src/kernels/laspoints.cu",}
+	});
+
+	static bool pageableMemoryAccess = [](){
+		CUdevice device;
+		cuCtxGetDevice(&device);
+		int supported = 0;
+		cuDeviceGetAttribute(&supported, CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS, device);
+
+		if(!supported){
+			println("WARNING: GPU can not access pageable host memory. Memory-mapped las files will not be rendered.");
+		}
+
+		return supported != 0;
+	}();
+
+	if(!pageableMemoryAccess) return;
+	
+	vector<LasfileNode*> nodes;
+	scene->forEach<LasfileNode>([&](LasfileNode* node){
+		if(node->mapped == nullptr) return;
+		if(node->compressed) return;
+
+		nodes.push_back(node);
+	});
+	
+	u64 totalPoints = 0;
+	for(LasfileNode* node : nodes){
+		
+		mat4 worldView         = mat4(view.view * node->transform_global);
+		u8* points             = (u8*)node->mapped + node->offset_pointData;
+		u64 numPoints          = node->numPoints;
+		u32 pointRecordSize    = node->pointRecordSize;
+		i32 offset_rgb         = node->offset_rgb;
+		vec3 scale             = node->scale;
+		
+		void* args[] = {
+			&target,
+			&points,
+			&numPoints,
+			&pointRecordSize,
+			&offset_rgb,
+			&scale,
+			&worldView
+		};
+		prog->launchCooperative("kernel_drawLasPoints", args, {.blocksize = 256});
+		
+		totalPoints += std::min<u64>(numPoints, MAX_LAS_POINTS);
+	}
+	
+	auto& dvlist = Runtime::debugValueList;
+	dvlist.push_back({"num las points", format("{:L}", totalPoints)});
 	
 }
 
@@ -653,6 +714,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		}
 		
 		drawPoints(scene, view, target);
+		drawLasPoints(scene, view, target);
 		
 		drawTrianglesTranslucent(
 			scene, view, meshes_unique_translucent, meshes_allInstances, 

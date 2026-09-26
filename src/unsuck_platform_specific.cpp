@@ -394,6 +394,109 @@ void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* 
 #include "stdio.h"
 #include "string.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <cerrno>
+
+void toClipboard(string str) {
+	println("WARN: toClipboard() not available on this platform.");
+}
+
+void hideConsole(){
+	// not applicable
+}
+
+// Alignment requirement for O_DIRECT reads (file offset, size and target buffer).
+uint64_t getPhysicalSectorSize(string path) {
+	uint64_t alignment = 4096;
+
+#if defined(STATX_DIOALIGN)
+	struct statx stx;
+	if (statx(AT_FDCWD, path.c_str(), 0, STATX_DIOALIGN, &stx) == 0 && (stx.stx_mask & STATX_DIOALIGN)) {
+		alignment = std::max<uint64_t>({alignment, stx.stx_dio_offset_align, stx.stx_dio_mem_align});
+	}
+#endif
+
+	return alignment;
+}
+
+static void preadFully(int fd, uint64_t start, uint64_t size, void* target, int fd_fallback, string path) {
+	uint64_t remaining = size;
+	uint64_t offset    = start;
+	uint8_t* dst       = reinterpret_cast<uint8_t*>(target);
+
+	while (remaining > 0) {
+		ssize_t n = pread(fd, dst, remaining, offset);
+
+		if (n < 0 && errno == EINTR) continue;
+
+		if (n < 0 && errno == EINVAL && fd_fallback != -1 && fd != fd_fallback) {
+			// O_DIRECT alignment requirements not met; read the rest buffered
+			fd = fd_fallback;
+			continue;
+		}
+
+		if (n < 0) {
+			println("ERROR: pread failed: {}", strerror(errno));
+			println("path:  {}", path);
+			println("start: {}", start);
+			println("size:  {}", size);
+			println("{}", stacktrace::current());
+			exit(72463623);
+		}
+
+		// EOF - padded reads may extend past the end of the file
+		if (n == 0) break;
+
+		offset    += n;
+		dst       += n;
+		remaining -= n;
+	}
+}
+
+shared_ptr<UnbufferedFile> UnbufferedFile::open(string path){
+
+	shared_ptr<UnbufferedFile> file = make_shared<UnbufferedFile>();
+	file->path = path;
+
+	file->fd_buffered = ::open(path.c_str(), O_RDONLY);
+
+	if (file->fd_buffered == -1) {
+		println("ERROR: failed to open file");
+		println("path:  {}", path);
+		println("{}", stacktrace::current());
+		exit(6362345);
+	}
+
+	// Some file systems (e.g. tmpfs) do not support O_DIRECT
+	file->fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
+	if (file->fd == -1) {
+		file->fd = file->fd_buffered;
+	}
+
+	file->sectorSize = getPhysicalSectorSize(path);
+
+	return file;
+}
+
+void UnbufferedFile::read(uint64_t start, uint64_t size, void* target){
+	preadFully(fd, start, size, target, fd_buffered, path);
+}
+
+void UnbufferedFile::close(){
+	if (fd != -1 && fd != fd_buffered) ::close(fd);
+	if (fd_buffered != -1) ::close(fd_buffered);
+	fd = -1;
+	fd_buffered = -1;
+}
+
+void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* target){
+	auto file = UnbufferedFile::open(path);
+	file->read(start, size, target);
+	file->close();
+}
+
 int parseLine(char* line){
     // This assumes that a digit will be found and the line ends in " Kb".
     int i = strlen(line);

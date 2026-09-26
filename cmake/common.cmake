@@ -45,7 +45,7 @@ function(ADD_CUDA TARGET_NAME)
 	MESSAGE(STATUS "CUDAToolkit_NVCC_EXECUTABLE:  " ${CUDAToolkit_NVCC_EXECUTABLE})
 	MESSAGE(STATUS "CUDA_DEVRTLIB:                " ${CUDA_DEVRTLIB})
 
-	target_include_directories(${TARGET_NAME} PRIVATE CUDAToolkit_INCLUDE_DIRS)
+	target_include_directories(${TARGET_NAME} PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 	target_link_libraries(${TARGET_NAME} PRIVATE
 		CUDA::cuda_driver
 		CUDA::nvrtc

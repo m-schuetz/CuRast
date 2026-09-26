@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.5)
 
 set(TARGET_NAME CuRast) 
+
+# On Linux, nvcc is usually not on PATH. Pick up the default toolkit location.
+if (NOT WIN32 AND NOT CMAKE_CUDA_COMPILER AND NOT DEFINED ENV{CUDACXX} AND EXISTS "/usr/local/cuda/bin/nvcc")
+	set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
+endif()
+
 project(${TARGET_NAME} LANGUAGES CXX CUDA)
 set(CMAKE_CXX_STANDARD 23)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
@@ -8,7 +14,12 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 include(cmake/common.cmake)
 
 # Paths to TurboJPEG
-set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib") 
+if (WIN32)
+	set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib")
+else()
+	# Ubuntu/Debian: libturbojpeg0-dev
+	find_library(TURBOJPEG_LIBRARY NAMES libturbojpeg.a turbojpeg REQUIRED)
+endif()
 
 # --------------------------------------------------------
 # Source files (C++ and CUDA)
@@ -21,6 +32,10 @@ file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS
 	#src/kernels/rasterization_utils.cu
 )
 
+# Choose GPU architectures (adjust for your machine). 
+# Must be set before add_executable to take effect. 
+set(CMAKE_CUDA_ARCHITECTURES 75 86 89 90)
+
 add_executable(${TARGET_NAME} ${PROJECT_SOURCES})
 if (MSVC)
 	target_compile_options(${TARGET_NAME} PRIVATE
@@ -31,6 +46,7 @@ endif()
 target_compile_definitions(${TARGET_NAME} PUBLIC
 	IMGUI_DEFINE_MATH_OPERATORS
 	_HAS_STD_BYTE=0
+	GLFW_INCLUDE_NONE
 )
 if (WIN32)
 	target_compile_definitions(${TARGET_NAME} PUBLIC VK_USE_PLATFORM_WIN32_KHR)
@@ -50,6 +66,19 @@ target_link_libraries(${TARGET_NAME} PRIVATE
 	laszip
 )
 
+# std::stacktrace lives in a separate library with libstdc++
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+	target_link_libraries(${TARGET_NAME} PRIVATE stdc++exp)
+endif()
+
+# libstdc++ implements std::execution::par via TBB if its headers are found
+if (NOT WIN32)
+	find_package(TBB QUIET)
+	if (TBB_FOUND)
+		target_link_libraries(${TARGET_NAME} PRIVATE TBB::tbb)
+	endif()
+endif()
+
 # Add other third-party libs
 ADD_CUDA(${TARGET_NAME})
 ADD_VULKAN(${TARGET_NAME})
@@ -59,9 +88,6 @@ ADD_IMGUI(${TARGET_NAME})
 # --------------------------------------------------------
 # CUDA configuration
 # --------------------------------------------------------
-# Choose GPU architectures (adjust for your machine)
-set(CMAKE_CUDA_ARCHITECTURES 75 86 89 90)
-
 # Enable separable compilation (for multi-file CUDA builds)
 set_target_properties(${TARGET_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
@@ -87,3 +113,9 @@ target_include_directories(PlyToGlb PRIVATE
 	./src
 	./libs
 )
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+	target_link_libraries(PlyToGlb PRIVATE stdc++exp)
+endif()
+if (TBB_FOUND)
+	target_link_libraries(PlyToGlb PRIVATE TBB::tbb)
+endif()

@@ -49,7 +49,9 @@ struct Benchmarking{
 		return scenario->path.contains("_optimized");
 	}
 
-	static inline vector<Scenario> scenarios = {
+	// Built in a function because GCC does not allow using Scenario's default member 
+	// initializers before the enclosing class is complete (CWG 1397).
+	static vector<Scenario> createScenarios(){ return {
 		Scenario{
 			.path      = "DATASETPATH/sponza-png_by_Ludicon.glb",
 			.label     = "Sponza",
@@ -339,7 +341,9 @@ struct Benchmarking{
 				return true;
 			},
 		},
-	};
+	};}
+
+	static inline vector<Scenario> scenarios = createScenarios();
 
 };
 

@@ -38,6 +38,9 @@
 constexpr uint32_t BACKGROUND_COLOR = 0xffffffff;
 constexpr uint64_t DEFAULT_PIXEL = (uint64_t(0x7f800000) << 32) | BACKGROUND_COLOR;
 
+// Rendering las files directly from the memory-mapped file is limited to the first N points
+constexpr uint64_t MAX_LAS_POINTS = 2'000'000;
+
 constexpr uint32_t RASTERIZER_BASIC = 0;
 constexpr uint32_t RASTERIZER_VISBUFFER = 1;
 constexpr uint32_t RASTERIZER_OPENGL = 2;

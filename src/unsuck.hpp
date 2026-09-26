@@ -22,6 +22,12 @@
 #include <mutex>
 #include <print>
 #include <stacktrace>
+#include <type_traits>
+
+#if !defined(_MSC_VER)
+	#include <csignal>
+	#define __debugbreak() std::raise(SIGTRAP)
+#endif
 
 using std::cout;
 using std::endl;
@@ -813,8 +819,9 @@ inline std::locale getSaneLocale(){
 	return std::locale(std::cout.getloc(), new punct_facet);
 }
 
+// granularity is non-deduced so that e.g. uint64_t (unsigned long on linux) and 4llu can be mixed
 template<typename T>
-inline T roundUp(T number, T granularity){
+inline T roundUp(T number, std::type_identity_t<T> granularity){
 	T count = (number + granularity - 1) / granularity;
 
 	return count * granularity;
@@ -864,7 +871,9 @@ size_t byteSizeOf(const vector<T>& v){
 struct UnbufferedFile{
 
 	string path;
-	void* handle = nullptr;
+	void* handle = nullptr;   // windows
+	int fd = -1;              // linux, opened with O_DIRECT if possible
+	int fd_buffered = -1;     // linux, fallback if O_DIRECT reads are rejected
 	int64_t sectorSize = 0;
 
 	static shared_ptr<UnbufferedFile> open(string path);

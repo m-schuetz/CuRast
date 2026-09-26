@@ -8,12 +8,26 @@ namespace cg = cooperative_groups;
 #define FALSE 0
 #define TRUE 1
 
+#if defined(__CUDACC_RTC__)
 typedef unsigned int uint32_t;
 typedef int int32_t;
 // typedef char int8_t;
 typedef unsigned char uint8_t;
 typedef unsigned long long uint64_t;
 typedef long long int64_t;
+#else
+#include <cstdint>
+#endif
+
+#if !defined(__CUDACC_RTC__) && !defined(_WIN32)
+// With nvcc on linux, uint64_t is unsigned long, for which CUDA has no 64 bit atomic overloads.
+static_assert(sizeof(unsigned long) == sizeof(unsigned long long));
+__device__ inline unsigned long atomicAdd(unsigned long* address, unsigned long val){ return atomicAdd((unsigned long long*)address, (unsigned long long)val); }
+__device__ inline unsigned long atomicMin(unsigned long* address, unsigned long val){ return atomicMin((unsigned long long*)address, (unsigned long long)val); }
+__device__ inline unsigned long atomicMax(unsigned long* address, unsigned long val){ return atomicMax((unsigned long long*)address, (unsigned long long)val); }
+__device__ inline unsigned long atomicExch(unsigned long* address, unsigned long val){ return atomicExch((unsigned long long*)address, (unsigned long long)val); }
+__device__ inline unsigned long atomicCAS(unsigned long* address, unsigned long compare, unsigned long val){ return atomicCAS((unsigned long long*)address, (unsigned long long)compare, (unsigned long long)val); }
+#endif
 
 constexpr uint32_t MAX_STRING_LENGTH = 1'000;
 

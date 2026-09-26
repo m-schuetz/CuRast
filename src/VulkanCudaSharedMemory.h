@@ -195,7 +195,7 @@ struct VulkanCudaSharedMemory {
 		// ----------------------------------------------------------------
 		while (comitted < requested_size) {
 			uint64_t diff             = requested_size - comitted;
-			uint64_t stepSize         = min(diff, 1'000'000'000llu);
+			uint64_t stepSize         = min<uint64_t>(diff, 1'000'000'000llu);
 			uint64_t currentRequested = comitted + stepSize;
 			uint64_t padded           = roundUp(currentRequested, granularity);
 			if (padded <= comitted) break;

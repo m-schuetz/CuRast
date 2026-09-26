@@ -610,7 +610,7 @@ void convert(string path, string gltfPath){
 
 	auto mappedFile = Mapping::mapFile(path);
 
-	string strProbableHeader((const char*)mappedFile->data, min(fs::file_size(path), 10'000llu));
+	string strProbableHeader((const char*)mappedFile->data, min<uint64_t>(fs::file_size(path), 10'000llu));
 	size_t pos_headerToken = strProbableHeader.find("end_header");
 	if(pos_headerToken == string::npos){
 		println("could not find end of header in ply file");

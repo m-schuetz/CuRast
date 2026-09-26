@@ -2,6 +2,15 @@
 
 #include <memory>
 #include <string>
+#include <cstring>
+#include <print>
+
+#if defined(__linux__)
+	#include <fcntl.h>
+	#include <sys/mman.h>
+	#include <sys/stat.h>
+	#include <unistd.h>
+#endif
 
 using std::shared_ptr;
 using namespace std;
@@ -28,12 +37,14 @@ struct MappedFile{
 
 	string path;
 
+	void* data = nullptr;
+
 	#ifdef _WIN32
 		HANDLE h_file;
 		HANDLE h_mapping;
-		void* data = nullptr;
 	#elif defined(__linux__)
-		TODO
+		int fd = -1;
+		size_t size = 0;
 	#endif
 
 	~MappedFile(){
@@ -47,6 +58,15 @@ struct MappedFile{
 				CloseHandle(h_mapping);
 				CloseHandle(h_file);
 				data = nullptr;
+			}
+		#elif defined(__linux__)
+			if(data != nullptr){
+				munmap(data, size);
+				data = nullptr;
+			}
+			if(fd != -1){
+				close(fd);
+				fd = -1;
 			}
 		#endif
 	}
@@ -112,7 +132,27 @@ shared_ptr<MappedFile> mapFile(string path){
 		}
 
 	#elif defined(__linux__)
-		TODO
+		file->fd = open(path.c_str(), O_RDONLY);
+
+		if (file->fd == -1) {
+			println("failed to map file {}", path);
+			exit(143146);
+		}
+
+		struct stat st;
+		if (fstat(file->fd, &st) != 0) {
+			println("fstat failed");
+			exit(524631);
+		}
+		file->size = st.st_size;
+
+		file->data = mmap(nullptr, file->size, PROT_READ, MAP_SHARED, file->fd, 0);
+
+		if (file->data == MAP_FAILED) {
+			file->data = nullptr;
+			println("mmap failed");
+			exit(642324);
+		}
 	#endif
 
 	return file;
