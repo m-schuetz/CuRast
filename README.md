@@ -122,3 +122,10 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds at startup
 	DOI = {10.1111/cgf.70538}
 }
 ```
+
+
+# reports how many pages are cached
+vmtouch -v /run/media/mschuetz/Lightning/resources/pointclouds/CA13_converted/octree.bin
+
+# evicts pages from cache
+vmtouch -e /run/media/mschuetz/Lightning/resources/pointclouds/CA13_converted/octree.bin
