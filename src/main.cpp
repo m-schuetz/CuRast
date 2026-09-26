@@ -11,9 +11,7 @@
 
 #include "unsuck.hpp"
 
-#include "cuda.h"
-#include "cuda_runtime.h"
-#include "CudaModularProgram.h"
+#include <cuda_runtime.h>
 
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -29,19 +27,15 @@
 
 using namespace std; // YOLO
 
-CUcontext context;
-
 void initCuda() {
-	cuInit(0);
-	
-	CUctxCreateParams creation_params = {};
-	cuDeviceGet(&CURuntime::device, 0);
-	cuCtxCreate(&context, &creation_params, 0, CURuntime::device);
+	CURuntime::device = 0;
+	CURuntime::assertCudaSuccess(cudaSetDevice(CURuntime::device));
+	CURuntime::assertCudaSuccess(cudaFree(nullptr)); // creates the context
 
 	// None of our kernels use stack/local memory, but the default limit of 1kb per thread reserves 
 	// stack for all threads that can be resident on the GPU (~192MB on an RTX 4090). 
 	// The driver automatically increases the limit if a kernel requires more.
-	cuCtxSetLimit(CU_LIMIT_STACK_SIZE, 0);
+	cudaDeviceSetLimit(cudaLimitStackSize, 0);
 }
 
 void initScene() {

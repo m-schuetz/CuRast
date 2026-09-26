@@ -43,7 +43,7 @@ __Future Work__: To make it suitable for games, we intend to (1) optimize handli
 ## Installing
 
 CuRast runs on Linux. Dependencies: 
-* CUDA 13.1 or later (expected at /usr/local/cuda)
+* CUDA 13.1 or later (expected at /usr/local/cuda). The kernels are compiled with nvcc during the build.
 * A driver with HMM support (NVIDIA open kernel modules), so that CUDA kernels can read memory-mapped files directly
 * On Ubuntu/Debian: `sudo apt install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev wayland-protocols libvulkan-dev libtbb-dev`
 
@@ -52,11 +52,10 @@ mkdir build
 cd build
 cmake ../ -DCMAKE_BUILD_TYPE=Release
 make -j
-cd ..
-./build/CuRast
+./CuRast
 ```
 
-Run CuRast from the project root, since CUDA kernels are compiled at runtime from ./src/kernels.
+By default, kernels are compiled for the GPU(s) of the build machine. To build for other GPUs, pass e.g. `-DCMAKE_CUDA_ARCHITECTURES="89;120"` to cmake.
 
 ## Getting Started
 

@@ -19,7 +19,7 @@ void makeMemory(){
 
 			static ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg;
 
-			ImGui::Text("List of allocations made via CURuntime::alloc and allocVirtual.");
+			ImGui::Text("List of allocations made via MemoryManager::alloc and allocBuffer.");
 			ImGui::Text(" ");
 
 			ImGui::Text("===============================");
@@ -56,30 +56,30 @@ void makeMemory(){
 			}
 
 			ImGui::Text("===============================");
-			ImGui::Text("## VIRTUAL CUDA MEMORY ALLOCATIONS");
+			ImGui::Text("## RESIZABLE CUDA BUFFERS");
 			ImGui::Text("===============================");
 
 			if(ImGui::BeginTable("Memory", 2, flags)){
 
 				ImGui::TableSetupColumn("Label",             ImGuiTableColumnFlags_WidthStretch, 3.0f);
-				ImGui::TableSetupColumn("allocated/comitted memory",  ImGuiTableColumnFlags_WidthStretch, 1.0f);
+				ImGui::TableSetupColumn("Allocated Memory",  ImGuiTableColumnFlags_WidthStretch, 1.0f);
 
 				ImGui::TableHeadersRow();
 
 				int64_t sum = 0;
-				for(CudaVirtualMemory* memory : MemoryManager::cudaVirtual){
+				for(CudaBuffer* buffer : MemoryManager::buffers){
 					
 					ImGui::TableNextRow();
 
 					ImGui::TableNextColumn();
-					ImGui::Text(memory->label.c_str());
+					ImGui::Text(buffer->label.c_str());
 
 					ImGui::TableNextColumn();
-					string strMemory = format(getSaneLocale(), "{:L}", memory->comitted);
+					string strMemory = format(getSaneLocale(), "{:L}", buffer->size);
 					alignRight(strMemory);
 					ImGui::Text(strMemory.c_str());
 
-					sum += memory->comitted;
+					sum += buffer->size;
 				}
 
 				{

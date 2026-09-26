@@ -4,16 +4,16 @@
 // The host is responsible for determining which nodes are visible and passes only those.
 // Each block draws all points of one node.
 
-#define CUB_DISABLE_BF16_SUPPORT
+#include <cstdint>
+#include <cstdio>
+#include <cuda_runtime.h>
 
-// === required by GLM ===
+// GLM detects CUDA via CUDA_VERSION from the driver API's cuda.h. The runtime API defines CUDART_VERSION.
+#ifndef CUDA_VERSION
+	#define CUDA_VERSION CUDART_VERSION
+#endif
 #define GLM_FORCE_CUDA
 #define GLM_FORCE_NO_CTOR_INIT
-#define CUDA_VERSION 12000
-namespace std {
-	using size_t = ::size_t;
-};
-// =======================
 
 #include <cooperative_groups.h>
 
@@ -25,26 +25,21 @@ namespace std {
 
 namespace cg = cooperative_groups;
 
-// Kernels are compiled with NVRTC, which has no <cstdint>
-typedef unsigned int uint32_t;
-typedef int int32_t;
-typedef unsigned char uint8_t;
-typedef unsigned long long uint64_t;
-typedef long long int64_t;
-
 #include "./HostDeviceInterface.h"
 #include "../types.h"
+#include "./kernels.h"
+#include "../Timer.h"
 
 using glm::ivec2;
 using glm::vec4;
 
 // Point records are packed and not aligned (e.g. 21 bytes per point),
 // so values are assembled from individual bytes.
-inline u32 readU16(const u8* p){
+__device__ inline u32 readU16(const u8* p){
 	return u32(p[0]) | (u32(p[1]) << 8);
 }
 
-inline i32 readI32(const u8* p){
+__device__ inline i32 readI32(const u8* p){
 	return i32(u32(p[0]) | (u32(p[1]) << 8) | (u32(p[2]) << 16) | (u32(p[3]) << 24));
 }
 
@@ -121,9 +116,25 @@ void kernel_drawPotreeFileNodes(
 			u64 fragment = udepth << 32 | color;
 
 			if(fragment < target.colorbuffer[pixelID]){
-				atomicMin(&target.colorbuffer[pixelID], fragment);
+				atomicMin((unsigned long long*)&target.colorbuffer[pixelID], (unsigned long long)fragment);
 			}
 		}
 	}
 
+}
+
+// ------------------------------------------------------------------------------------------------
+// Host
+// ------------------------------------------------------------------------------------------------
+
+static bool registered = registerKernel("potreeFileRenderer.cu", "kernel_drawPotreeFileNodes", (const void*)kernel_drawPotreeFileNodes);
+
+void launch_drawPotreeFileNodes(const RenderTarget& target, PotreeNode* nodes, uint64_t numNodes){
+	if(numNodes == 0) return;
+
+	// one block per node
+	auto start = Timer::recordCudaTimestamp();
+	kernel_drawPotreeFileNodes<<<uint32_t(numNodes), 256>>>(target, nodes, numNodes);
+	checkKernelLaunch("kernel_drawPotreeFileNodes");
+	Timer::recordDuration("kernel_drawPotreeFileNodes", start, Timer::recordCudaTimestamp());
 }

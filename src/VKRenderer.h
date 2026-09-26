@@ -55,7 +55,7 @@ inline void loadVkExt(VkInstance instance, VkDevice device) {
 #include "unsuck.hpp"
 #include "OrbitControls.h"
 
-#include "cuda.h"
+#include <cuda_runtime.h>
 
 using glm::dvec3;
 using glm::dvec4;
@@ -80,9 +80,9 @@ struct VKTexture {
 	std::string label;
 
 	// CUDA external memory interop handles — populated by importToCuda()
-	CUexternalMemory cudaExtMem   = nullptr;
-	CUmipmappedArray cudaMipArray = nullptr;
-	CUsurfObject     cudaSurface  = 0;
+	cudaExternalMemory_t cudaExtMem   = nullptr;
+	cudaMipmappedArray_t cudaMipArray = nullptr;
+	cudaSurfaceObject_t  cudaSurface  = 0;
 
 	void setSize(int w, int h);
 	void importToCuda();

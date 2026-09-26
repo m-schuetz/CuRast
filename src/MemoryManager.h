@@ -1,149 +1,37 @@
-#pragma once 
+#pragma once
 
 #include <mutex>
 #include <vector>
 #include <string>
 #include <print>
-#include <stacktrace>
 
-#include "cuda.h"
+#include <cuda_runtime.h>
+
 #include "unsuck.hpp"
 #include "CURuntime.h"
-#include "VKRenderer.h"
 
 using std::println;
 using std::mutex;
 using std::lock_guard;
-using std::stacktrace;
 
-// see https://developer.nvidia.com/blog/introducing-low-level-gpu-virtual-memory-management/
-struct CudaVirtualMemory{
+// Device buffer that grows on demand, e.g. for framebuffers that are resized with the window.
+// Growing reallocates the buffer, i.e., the pointer changes and the previous content is discarded.
+struct CudaBuffer{
 
 	string label;
+	void* ptr = nullptr;
 	uint64_t size = 0;
-	uint64_t comitted = 0;
-	uint64_t granularity = 0;
-	CUdeviceptr cptr = 0;
 
-	// Keeping track of allocated physical memory, so we can remap or free
-	std::vector<CUmemGenericAllocationHandle> allocHandles;
-	std::vector<uint64_t> allocHandleSizes;
+	// Makes sure that the buffer can hold at least <requestedSize> bytes.
+	void resize(uint64_t requestedSize){
+		if(requestedSize <= size) return;
 
-	CudaVirtualMemory(){
-		
-	}
-
-	~CudaVirtualMemory(){
-		destroy();
-	}
-
-	void destroy(){
-
-		// cuMemCreate          ->  cuMemRelease
-		// cuMemMap             ->  cuMemUnmap
-		// cuMemAddressReserve  ->  cuMemAddressFree 
-
-		// TODO: cuMemUnmap ? 
-
-		println("TODO: CudaVirtualMemory::destroy");
-
-		// if(cptr == 0){
-		// 	println("WARNING: tried to destroy virtual memory that was already destroyed.");
-		// 	return;
-		// }
-		
-		// for(auto handle : allocHandles){
-		// 	cuMemRelease(handle); 
-		// }
-		// allocHandles.clear();
-
-		// cuMemAddressFree(cptr, size);
-
-		// cptr = 0;
-	}
-
-	// allocate potentially large amounts of virtual memory
-	static CudaVirtualMemory* create(uint64_t virtualSize = 2'000'000'000, string label = "none") {
-
-		CUdevice cuDevice;
-		cuDeviceGet(&cuDevice, 0);
-		
-		CUmemAllocationProp prop = {};
-		prop.type          = CU_MEM_ALLOCATION_TYPE_PINNED;
-		prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-		prop.location.id   = cuDevice;
-
-		uint64_t granularity = 0;
-		cuMemGetAllocationGranularity(&granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM);
-
-		uint64_t padded_size = roundUp(virtualSize, granularity);
-
-		// reserve lots of virtual memory
-		CUdeviceptr cptr = 0;
-		auto result = cuMemAddressReserve(&cptr, padded_size, 0, 0, 0);
-
-		if(result != CUDA_SUCCESS){
-			println("error {} while trying to reserve virtual memory.", int(result));
-			exit(52457);
-		}
-		
-		CudaVirtualMemory* memory = new CudaVirtualMemory();
-		memory->size = padded_size;
-		memory->granularity = granularity;
-		memory->cptr = cptr;
-		memory->comitted = 0;
-		memory->label = label;
-
-		return memory;
-	}
-
-	// commits <size> physical memory. 
-	void commit(uint64_t requested_size){
-
-		static mutex mtx;
-		lock_guard<mutex> lock(mtx);
-
-		int64_t padded_requested_size = roundUp(requested_size, granularity);
-		int64_t required_additional_size = padded_requested_size - comitted;
-
-		// Do we already have enough comitted memory?
-		if(required_additional_size <= 0) return;
-		if(size < comitted + required_additional_size){
-			// TODO: reserve new virtual range and remap
-			println("physically comitting beyond initial virtual range not yet implemented.");
-			println("TODO: reserve new virtual range and remap");
-			println("{}", stacktrace::current());
-			exit(6235266);
+		if(ptr != nullptr){
+			CURuntime::assertCudaSuccess(cudaFree(ptr));
 		}
 
-		CUdevice cuDevice;
-		cuDeviceGet(&cuDevice, 0);
-
-		CUmemAllocationProp prop = {};
-		prop.type          = CU_MEM_ALLOCATION_TYPE_PINNED;
-		prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-		prop.location.id   = cuDevice;
-
-		// create a little bit of physical memory
-		CUmemGenericAllocationHandle allocHandle;
-		auto result = cuMemCreate(&allocHandle, required_additional_size, &prop, 0);
-		CURuntime::assertCudaSuccess(result);
-
-		// and map the physical memory
-		result = cuMemMap(cptr + comitted, required_additional_size, 0, allocHandle, 0); 
-		CURuntime::assertCudaSuccess(result);
-
-		// make the new memory accessible
-		CUmemAccessDesc accessDesc = {};
-		accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-		accessDesc.location.id = cuDevice;
-		accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-		result = cuMemSetAccess(cptr + comitted, required_additional_size, &accessDesc, 1);
-		CURuntime::assertCudaSuccess(result);
-
-		comitted += required_additional_size;
-		allocHandles.push_back(allocHandle);
-		allocHandleSizes.push_back(required_additional_size);
+		CURuntime::assertCudaSuccess(cudaMalloc(&ptr, requestedSize));
+		size = requestedSize;
 	}
 
 };
@@ -152,40 +40,39 @@ struct MemoryManager{
 
 	struct Allocation {
 		string label;
-		CUdeviceptr cptr;
+		void* ptr;
 		int64_t size;
 	};
 
 	inline static mutex mtx;
 	inline static vector<Allocation> allocations;
-	inline static vector<CudaVirtualMemory*> cudaVirtual;
+	inline static vector<CudaBuffer*> buffers;
 
-	inline static CudaVirtualMemory* allocVirtualCuda(uint64_t virtualCapacity, string label = "none"){
+	inline static CudaBuffer* allocBuffer(uint64_t size, string label = "none"){
 
-		CudaVirtualMemory* memory = CudaVirtualMemory::create(virtualCapacity, label);
-		cudaVirtual.push_back(memory);
+		CudaBuffer* buffer = new CudaBuffer();
+		buffer->label = label;
+		buffer->resize(size);
+		buffers.push_back(buffer);
 
-		return memory;
+		return buffer;
 	}
 
-	inline static CUdeviceptr alloc(int64_t size, string label){
-		CUdeviceptr cptr;
+	inline static void* alloc(int64_t size, string label){
+		void* ptr = nullptr;
 
-		auto result = cuMemAlloc(&cptr, size);
-		CURuntime::assertCudaSuccess(result);
+		CURuntime::assertCudaSuccess(cudaMalloc(&ptr, size));
 
 		lock_guard<mutex> lock(mtx);
-		Allocation entry = { label, cptr, size};
+		Allocation entry = { label, ptr, size};
 		allocations.push_back(entry);
 
-		return cptr;
+		return ptr;
 	}
 
-	
-
-	static void free(CUdeviceptr cptr) {
-		if (cptr == 0) {
-			println("WARNING: attempted to CURuntime::free a null ptr. Already freed?");
+	static void free(void* ptr) {
+		if (ptr == nullptr) {
+			println("WARNING: attempted to MemoryManager::free a null ptr. Already freed?");
 			return;
 		}
 
@@ -193,9 +80,9 @@ struct MemoryManager{
 
 		int index = -1;
 		for(int i = 0; i < allocations.size(); i++){
-			if(allocations[i].cptr == cptr){
+			if(allocations[i].ptr == ptr){
 				index = i;
-				cuMemFree(cptr);
+				cudaFree(ptr);
 			}
 		}
 
@@ -204,9 +91,9 @@ struct MemoryManager{
 		}
 	}
 
-	static int64_t getByteSize(CUdeviceptr cptr){
+	static int64_t getByteSize(void* ptr){
 		for(int i = 0; i < allocations.size(); i++){
-			if(allocations[i].cptr == cptr){
+			if(allocations[i].ptr == ptr){
 				return allocations[i].size;
 			}
 		}
@@ -222,8 +109,8 @@ struct MemoryManager{
 			bytes += allocations[i].size;
 		}
 
-		for(auto memory : cudaVirtual){
-			bytes += memory->comitted;
+		for(auto buffer : buffers){
+			bytes += buffer->size;
 		}
 
 		return bytes;

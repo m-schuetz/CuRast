@@ -59,92 +59,6 @@ inline double now() {
 	return secondsSinceStart;
 }
 
-inline void printElapsedTime(string label, double startTime) {
-
-	double elapsed = now() - startTime;
-
-	println("{}: {:.3f}s", label, elapsed);
-}
-
-// taken from: https://stackoverflow.com/questions/2602013/read-whole-ascii-file-into-c-stdstring/2602060
-inline string readFile(string path) {
-
-	std::ifstream t(path);
-	std::string str;
-
-	t.seekg(0, std::ios::end);
-	str.reserve(t.tellg());
-	t.seekg(0, std::ios::beg);
-
-	str.assign((std::istreambuf_iterator<char>(t)),
-		std::istreambuf_iterator<char>());
-
-	return str;
-}
-
-struct EventQueue {
-
-	static EventQueue* instance;
-	vector<std::function<void()>> queue;
-	mutex mtx;
-
-	void add(std::function<void()> event) {
-		mtx.lock();
-		this->queue.push_back(event);
-		mtx.unlock();
-	}
-
-	void process() {
-
-		mtx.lock();
-		vector<std::function<void()>> q = queue;
-		queue = vector<std::function<void()>>();
-		mtx.unlock();
-
-		for (auto &event : q) {
-			event();
-		}
-	}
-};
-
-inline EventQueue* EventQueue::instance = new EventQueue();
-
-inline void schedule(std::function<void()> event) {
-	EventQueue::instance->add(event);
-}
-
-inline void monitorFile(string file, std::function<void()> callback) {
-
-	std::thread([file, callback]() {
-
-		if (!fs::exists(file)) {
-			cout << "ERROR(monitorFile): file does not exist: " << file << endl;
-
-			return;
-		}
-
-		auto lastWriteTime = fs::last_write_time(fs::path(file));
-
-		using namespace std::chrono_literals;
-
-		while (true) {
-			std::this_thread::sleep_for(20ms);
-
-			auto currentWriteTime = fs::last_write_time(fs::path(file));
-
-			if (currentWriteTime > lastWriteTime) {
-
-				//callback();
-				schedule(callback);
-
-				lastWriteTime = currentWriteTime;
-			}
-
-		}
-
-	}).detach();
-}
-
 class punct_facet : public std::numpunct<char> {
 protected:
 	char do_decimal_point() const { return '.'; };
@@ -154,14 +68,6 @@ protected:
 
 inline std::locale getSaneLocale(){
 	return std::locale(std::cout.getloc(), new punct_facet);
-}
-
-// granularity is non-deduced so that e.g. uint64_t (unsigned long on linux) and 4llu can be mixed
-template<typename T>
-inline T roundUp(T number, std::type_identity_t<T> granularity){
-	T count = (number + granularity - 1) / granularity;
-
-	return count * granularity;
 }
 
 template<typename T>

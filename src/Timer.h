@@ -4,7 +4,7 @@
 #include <queue>
 #include <string>
 
-#include "cuda.h"
+#include <cuda_runtime.h>
 
 
 
@@ -13,7 +13,7 @@ using namespace std;
 struct Timer{
 
 	struct Timestamp{
-		CUevent  cudaEvent  = nullptr;
+		cudaEvent_t cudaEvent = nullptr;
 	};
 
 	struct Recording{
@@ -40,7 +40,7 @@ struct Timer{
 
 				Timestamp timestamp;
 
-				cuEventCreate(&timestamp.cudaEvent, CU_EVENT_DEFAULT);
+				cudaEventCreate(&timestamp.cudaEvent);
 
 				pool.push(timestamp);
 			}
@@ -57,7 +57,7 @@ struct Timer{
 		Timestamp timestamp = pool.front();
 		pool.pop();
 
-		cuEventRecord(timestamp.cudaEvent, 0);
+		cudaEventRecord(timestamp.cudaEvent, 0);
 
 		timestamps.push_back(timestamp);
 
@@ -84,9 +84,9 @@ struct Timer{
 		init();
 
 		for(Recording& recording : recordings){
-			cuCtxSynchronize();
+			cudaDeviceSynchronize();
 			float duration;
-			cuEventElapsedTime(&duration, recording.start.cudaEvent, recording.end.cudaEvent);
+			cudaEventElapsedTime(&duration, recording.start.cudaEvent, recording.end.cudaEvent);
 
 			recording.milliseconds = duration;
 		}

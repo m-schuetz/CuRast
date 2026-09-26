@@ -8,6 +8,7 @@
 #include "types.h"
 #include "scene/LasfileNode.h"
 #include "scene/PotreeFileNode.h"
+#include "kernels/kernels.h"
 
 using namespace std;
 
@@ -103,13 +104,13 @@ void alignRight(string text) {
 	ImGui::SetCursorPosX(rightBorder - width);
 }
 
-CudaVirtualMemory* cvm_colorbuffer = nullptr;
+CudaBuffer* colorbuffer = nullptr;
 bool initialized = false;
 
 // Cuda-Vulkan interop
 struct MappedTextures{
 	vector<shared_ptr<VKTexture>> textures;
-	vector<CUsurfObject> surfaces;
+	vector<cudaSurfaceObject_t> surfaces;
 };
 
 static unordered_map<int64_t, int64_t> lastImportedVersion;
@@ -129,16 +130,14 @@ MappedTextures mapCudaVk(vector<shared_ptr<VKTexture>> textures){
 
 void unmapCudaVk(MappedTextures& mappings){
 	// Ensure CUDA writes are complete before Vulkan blits the image
-	cuStreamSynchronize((CUstream)CU_STREAM_DEFAULT);
+	cudaStreamSynchronize(0);
 }
 
 // Whether kernels can directly access pageable host memory, e.g. memory-mapped files (HMM on linux).
 bool canAccessPageableMemory(){
 	static bool supported = [](){
-		CUdevice device;
-		cuCtxGetDevice(&device);
 		int supported = 0;
-		cuDeviceGetAttribute(&supported, CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS, device);
+		cudaDeviceGetAttribute(&supported, cudaDevAttrPageableMemoryAccess, CURuntime::device);
 
 		if(!supported){
 			println("WARNING: GPU can not access pageable host memory. Memory-mapped point clouds will not be rendered.");
@@ -158,10 +157,6 @@ bool canAccessPageableMemory(){
 void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 
 	u64 pointBudget = CuRastSettings::pointBudget;
-	
-	static CudaModularProgram* prog = new CudaModularProgram({
-		.modules = {"./src/kernels/potreeFileRenderer.cu",}
-	});
 
 	if(!canAccessPageableMemory()) return;
 
@@ -314,23 +309,17 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 	if(visibleNodes.size() > 0){
 
 		// upload list of visible nodes
-		static CUdeviceptr cptr_nodes = 0;
+		static PotreeNode* nodes = nullptr;
 		static u64 capacity = 0;
 		if(visibleNodes.size() > capacity){
-			if(cptr_nodes != 0) MemoryManager::free(cptr_nodes);
+			if(nodes != nullptr) MemoryManager::free(nodes);
 
 			capacity = std::max<u64>(2 * visibleNodes.size(), 1'000);
-			cptr_nodes = MemoryManager::alloc(capacity * sizeof(PotreeNode), "potree visible nodes");
+			nodes = (PotreeNode*)MemoryManager::alloc(capacity * sizeof(PotreeNode), "potree visible nodes");
 		}
-		cuMemcpyHtoD(cptr_nodes, visibleNodes.data(), byteSizeOf(visibleNodes));
+		cudaMemcpy(nodes, visibleNodes.data(), byteSizeOf(visibleNodes), cudaMemcpyHostToDevice);
 
-		u64 numNodes = visibleNodes.size();
-		void* args[] = {
-			&target,
-			&cptr_nodes,
-			&numNodes
-		};
-		prog->launch("kernel_drawPotreeFileNodes", args, {.gridsize = u32(numNodes), .blocksize = 256});
+		launch_drawPotreeFileNodes(target, nodes, visibleNodes.size());
 	}
 
 	auto& dvlist = Runtime::debugValueList;
@@ -341,10 +330,6 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 // Renders LasfileNodes directly from their memory-mapped files. 
 // Requires GPU access to pageable host memory (e.g. HMM on linux).
 void drawLasPoints(Scene* scene, View view, RenderTarget& target){
-	
-	static CudaModularProgram* prog = new CudaModularProgram({
-		.modules = {"./src/kernels/laspoints.cu",}
-	});
 
 	if(!canAccessPageableMemory()) return;
 	
@@ -366,16 +351,7 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 		i32 offset_rgb         = node->offset_rgb;
 		vec3 scale             = node->scale;
 		
-		void* args[] = {
-			&target,
-			&points,
-			&numPoints,
-			&pointRecordSize,
-			&offset_rgb,
-			&scale,
-			&worldView
-		};
-		prog->launchCooperative("kernel_drawLasPoints", args, {.blocksize = 256});
+		launch_drawLasPoints(target, points, numPoints, pointRecordSize, offset_rgb, scale, worldView);
 		
 		totalPoints += std::min<u64>(numPoints, MAX_LAS_POINTS);
 	}
@@ -392,7 +368,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	int supersamplingFactor = CuRastSettings::supersamplingFactor;
 
 	RenderTarget target;
-	target.colorbuffer = (u64*)cvm_colorbuffer->cptr;
+	target.colorbuffer = (u64*)colorbuffer->ptr;
 	target.width = supersamplingFactor * view.framebuffer->width;
 	target.height = supersamplingFactor * view.framebuffer->height;
 	target.proj = view.proj;
@@ -402,29 +378,20 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	vector<shared_ptr<VKTexture>> attachments = {view.framebuffer->colorAttachment};
 	auto mappings = mapCudaVk(attachments);
 
-	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/resolve.cu",});
-	// memcpy arguments to constant buffer
-	CUdeviceptr cptr_target = prog->getGlobalsPointer("c_target");
-	cuMemcpyHtoDAsync(cptr_target, &target, sizeof(target), 0);
-
 	// Let the first kernel in the frame be a dummy kernel to take the hit for CUDA-Vulkan interop overhead
 	// (so that we get more accurate timings for the other kernels)
-	static CUdeviceptr dummydata = MemoryManager::alloc(16, "dummydata");
-	prog->launch("kernel_dummy", {&dummydata}, 1);
+	static u32* dummydata = (u32*)MemoryManager::alloc(16, "dummydata");
+	launch_dummy(dummydata);
 
 	{ // resize and clear cuda colorbuffer
 		u32 clearColor = 0xff000000;
 		float clearDepth = Infinity;
 
-		u64 requiredBytes = numPixels * 8;
-		cvm_colorbuffer->commit(requiredBytes);
+		// resizing may reallocate the buffer
+		colorbuffer->resize(u64(numPixels) * 8);
+		target.colorbuffer = (u64*)colorbuffer->ptr;
 
-		prog->launch("kernel_clearFramebuffer", {
-			&cvm_colorbuffer->cptr,
-			&numPixels,
-			&clearColor,
-			&clearDepth
-		}, numPixels);
+		launch_clearFramebuffer(target.colorbuffer, numPixels, clearColor, clearDepth);
 	}
 
 	drawLasPoints(scene, view, target);
@@ -443,17 +410,10 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		bgRgba[1] = clamp(CuRastSettings::background.y * 256.0f, 0.0f, 255.0f);
 		bgRgba[2] = clamp(CuRastSettings::background.z * 256.0f, 0.0f, 255.0f);
 
-		void* args[] = {
-			&mappings.surfaces[0],
-			&viewWidth,
-			&viewHeight,
-			&mouse_X,
-			&mouse_Y,
-			&CuRastSettings::enableEDL,
-			&CuRastSettings::showInset,
-			&backgroundColor
-		};
-		prog->launch2D("kernel_resolve_colorbuffer_to_opengl_2D", args, target.width, target.height);
+		launch_resolveColorbufferToSurface(
+			target, mappings.surfaces[0], 
+			viewWidth, viewHeight, mouse_X, mouse_Y,
+			CuRastSettings::enableEDL, CuRastSettings::showInset, backgroundColor);
 	}
 
 	unmapCudaVk(mappings);
@@ -463,10 +423,7 @@ void initialize(){
 	if(initialized) return;
 
 	int defaultPixels = 1920 * 1080;
-	int64_t virtualCapacity = 2'147'483'648; // sufficient for up to 4096 x 4096 pixels with 16x supersampling
-	// int max_SuperSamples = 16;
-	cvm_colorbuffer = MemoryManager::allocVirtualCuda(virtualCapacity, "colorbuffer");
-	cvm_colorbuffer->commit(8 * defaultPixels);
+	colorbuffer = MemoryManager::allocBuffer(8 * defaultPixels, "colorbuffer");
 
 	initialized = true;
 }

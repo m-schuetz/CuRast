@@ -4,16 +4,16 @@
 // - positions are decoded as X * scale, without adding the offset, so they stay centered around the origin
 // - only the first MAX_LAS_POINTS points are rendered
 
-#define CUB_DISABLE_BF16_SUPPORT
+#include <cstdint>
+#include <cstdio>
+#include <cuda_runtime.h>
 
-// === required by GLM ===
+// GLM detects CUDA via CUDA_VERSION from the driver API's cuda.h. The runtime API defines CUDART_VERSION.
+#ifndef CUDA_VERSION
+	#define CUDA_VERSION CUDART_VERSION
+#endif
 #define GLM_FORCE_CUDA
 #define GLM_FORCE_NO_CTOR_INIT
-#define CUDA_VERSION 12000
-namespace std {
-	using size_t = ::size_t;
-};
-// =======================
 
 #include <cooperative_groups.h>
 
@@ -25,26 +25,21 @@ namespace std {
 
 namespace cg = cooperative_groups;
 
-// Kernels are compiled with NVRTC, which has no <cstdint>
-typedef unsigned int uint32_t;
-typedef int int32_t;
-typedef unsigned char uint8_t;
-typedef unsigned long long uint64_t;
-typedef long long int64_t;
-
 #include "./HostDeviceInterface.h"
 #include "../types.h"
+#include "./kernels.h"
+#include "../Timer.h"
 
 using glm::ivec2;
 using glm::vec4;
 
 // Point records are packed and not aligned (e.g. 34 bytes per point, first point at an odd byte offset),
 // so values are assembled from individual bytes.
-inline u32 readU16(const u8* p){
+__device__ inline u32 readU16(const u8* p){
 	return u32(p[0]) | (u32(p[1]) << 8);
 }
 
-inline i32 readI32(const u8* p){
+__device__ inline i32 readI32(const u8* p){
 	return i32(u32(p[0]) | (u32(p[1]) << 8) | (u32(p[2]) << 16) | (u32(p[3]) << 24));
 }
 
@@ -115,8 +110,35 @@ void kernel_drawLasPoints(
 		u64 fragment = udepth << 32 | color;
 
 		if(fragment < target.colorbuffer[pixelID]){
-			atomicMin(&target.colorbuffer[pixelID], fragment);
+			atomicMin((unsigned long long*)&target.colorbuffer[pixelID], (unsigned long long)fragment);
 		}
 	}
 
+}
+
+// ------------------------------------------------------------------------------------------------
+// Host
+// ------------------------------------------------------------------------------------------------
+
+static bool registered = registerKernel("laspoints.cu", "kernel_drawLasPoints", (const void*)kernel_drawLasPoints);
+
+void launch_drawLasPoints(
+	const RenderTarget& target, uint8_t* points, uint64_t numPoints, 
+	uint32_t pointRecordSize, int32_t offset_rgb, 
+	const glm::vec3& scale, const glm::mat4& worldView
+){
+	// grid-stride loop over the points, with as many blocks as can be resident on the GPU
+	int blockSize = 256;
+	static int numBlocks = [&](){
+		int device, numSMs, blocksPerSM;
+		cudaGetDevice(&device);
+		cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, device);
+		cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocksPerSM, kernel_drawLasPoints, blockSize, 0);
+		return std::max(numSMs * blocksPerSM, 10);
+	}();
+
+	auto start = Timer::recordCudaTimestamp();
+	kernel_drawLasPoints<<<numBlocks, blockSize>>>(target, points, numPoints, pointRecordSize, offset_rgb, scale, worldView);
+	checkKernelLaunch("kernel_drawLasPoints");
+	Timer::recordDuration("kernel_drawLasPoints", start, Timer::recordCudaTimestamp());
 }

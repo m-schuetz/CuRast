@@ -21,24 +21,15 @@ endfunction()
 
 function(ADD_CUDA TARGET_NAME)
 	find_package(CUDAToolkit 13.1 REQUIRED)
-	find_library(CUDA_DEVRTLIB NAMES cudadevrt libcudadevrt PATHS "${CUDAToolkit_LIBRARY_DIR}")
 
 	MESSAGE(STATUS "CUDAToolkit_INCLUDE_DIRS:     " ${CUDAToolkit_INCLUDE_DIRS})
 	MESSAGE(STATUS "CUDAToolkit_BIN_DIR:          " ${CUDAToolkit_BIN_DIR})
 	MESSAGE(STATUS "CUDAToolkit_LIBRARY_DIR:      " ${CUDAToolkit_LIBRARY_DIR})
 	MESSAGE(STATUS "CUDAToolkit_LIBRARY_ROOT:     " ${CUDAToolkit_LIBRARY_ROOT})
 	MESSAGE(STATUS "CUDAToolkit_NVCC_EXECUTABLE:  " ${CUDAToolkit_NVCC_EXECUTABLE})
-	MESSAGE(STATUS "CUDA_DEVRTLIB:                " ${CUDA_DEVRTLIB})
 
 	target_include_directories(${TARGET_NAME} PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
-	target_link_libraries(${TARGET_NAME} PRIVATE
-		CUDA::cuda_driver
-		CUDA::nvrtc
-		CUDA::nvJitLink
-	)
-
-	# Not linked, but used at runtime to locate the toolkit's include directories for NVRTC
-	target_compile_definitions(${TARGET_NAME} PRIVATE CUDA_DEVRTLIB="${CUDA_DEVRTLIB}")
+	target_link_libraries(${TARGET_NAME} PRIVATE CUDA::cudart)
 endfunction()
 
 function(ADD_VULKAN TARGET_NAME)

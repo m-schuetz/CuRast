@@ -1,55 +1,25 @@
-
 #pragma once
 
-#include <string>
-#include <unordered_map>
-#include <map>
-#include <vector>
 #include <stacktrace>
 
-#include "OrbitControls.h"
+#include <cuda_runtime.h>
+
 #include "unsuck.hpp"
-
-#include "glm/common.hpp"
-
-#include "cuda.h"
-#include "cuda_runtime.h"
-
-using namespace std;
 
 struct CURuntime{
 
-	inline static CUdevice device;
-	
-	CURuntime(){
-		
-	}
+	inline static int device = 0;
 
-	static int getNumSMs(){
-		CUdevice device;
-		int numSMs;
-		cuCtxGetDevice(&device);
-		cuDeviceGetAttribute(&numSMs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device);
+	static void assertCudaSuccess(cudaError_t result, std::stacktrace trace = std::stacktrace::current()){
 
-		return numSMs;
-	}
+		if(result == cudaSuccess) return;
 
-
-	static void assertCudaSuccess(CUresult result, std::stacktrace trace = std::stacktrace::current()){
-
-		if(result == CUDA_SUCCESS) return;
-
-		println("ERROR: CUDA result != CUDA_SUCCESS.");
-
-		const char* name = nullptr;
-		const char* desc = nullptr;
-		cuGetErrorName(result, &name);
-		cuGetErrorString(result, &desc);
+		println("ERROR: CUDA result != cudaSuccess.");
 
 		println(stderr, "CUDA error {} ({}): {}\n ",
 			int(result),
-			name ? name : "unknown",
-			desc ? desc : "unknown");
+			cudaGetErrorName(result),
+			cudaGetErrorString(result));
 
 		println("{}", trace);
 

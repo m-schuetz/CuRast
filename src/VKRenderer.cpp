@@ -60,9 +60,9 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
 // ---------------------------------------------------------------------------
 
 void VKTexture::destroyCuda() {
-	if (cudaSurface) { cuSurfObjectDestroy(cudaSurface);         cudaSurface = 0; }
-	if (cudaMipArray) { cuMipmappedArrayDestroy(cudaMipArray);    cudaMipArray = nullptr; }
-	if (cudaExtMem) { cuDestroyExternalMemory(cudaExtMem);      cudaExtMem = nullptr; }
+	if (cudaSurface)  { cudaDestroySurfaceObject(cudaSurface);   cudaSurface = 0; }
+	if (cudaMipArray) { cudaFreeMipmappedArray(cudaMipArray);    cudaMipArray = nullptr; }
+	if (cudaExtMem)   { cudaDestroyExternalMemory(cudaExtMem);   cudaExtMem = nullptr; }
 }
 
 void VKTexture::destroy() {
@@ -82,35 +82,31 @@ void VKTexture::importToCuda() {
 	int fd;
 	vkGetMemoryFdKHR(VKRenderer::device, &handleInfo, &fd);
 
-	CUDA_EXTERNAL_MEMORY_HANDLE_DESC extDesc{};
-	extDesc.type       = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+	cudaExternalMemoryHandleDesc extDesc{};
+	extDesc.type       = cudaExternalMemoryHandleTypeOpaqueFd;
 	extDesc.handle.fd  = fd;
 
 	VkMemoryRequirements memReqs;
 	vkGetImageMemoryRequirements(VKRenderer::device, image, &memReqs);
 	extDesc.size = memReqs.size;
 
-	cuImportExternalMemory(&cudaExtMem, &extDesc);
+	CURuntime::assertCudaSuccess(cudaImportExternalMemory(&cudaExtMem, &extDesc));
 
+	cudaExternalMemoryMipmappedArrayDesc arrDesc{};
+	arrDesc.offset     = 0;
+	arrDesc.formatDesc = cudaCreateChannelDesc(8, 8, 8, 8, cudaChannelFormatKindUnsigned); // RGBA8
+	arrDesc.extent     = make_cudaExtent(width, height, 0);
+	arrDesc.flags      = cudaArraySurfaceLoadStore;
+	arrDesc.numLevels  = 1;
+	CURuntime::assertCudaSuccess(cudaExternalMemoryGetMappedMipmappedArray(&cudaMipArray, cudaExtMem, &arrDesc));
 
-	CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC arrDesc{};
-	arrDesc.offset                = 0;
-	arrDesc.arrayDesc.Width       = (size_t)width;
-	arrDesc.arrayDesc.Height      = (size_t)height;
-	arrDesc.arrayDesc.Depth       = 0;
-	arrDesc.arrayDesc.Format      = CU_AD_FORMAT_UNSIGNED_INT8;
-	arrDesc.arrayDesc.NumChannels = 4; // RGBA8
-	arrDesc.arrayDesc.Flags       = CUDA_ARRAY3D_SURFACE_LDST;
-	arrDesc.numLevels             = 1;
-	cuExternalMemoryGetMappedMipmappedArray(&cudaMipArray, cudaExtMem, &arrDesc);
+	cudaArray_t level0;
+	CURuntime::assertCudaSuccess(cudaGetMipmappedArrayLevel(&level0, cudaMipArray, 0));
 
-	CUarray level0;
-	cuMipmappedArrayGetLevel(&level0, cudaMipArray, 0);
-
-	CUDA_RESOURCE_DESC resDesc{};
-	resDesc.resType          = CU_RESOURCE_TYPE_ARRAY;
-	resDesc.res.array.hArray = level0;
-	cuSurfObjectCreate(&cudaSurface, &resDesc);
+	cudaResourceDesc resDesc{};
+	resDesc.resType         = cudaResourceTypeArray;
+	resDesc.res.array.array = level0;
+	CURuntime::assertCudaSuccess(cudaCreateSurfaceObject(&cudaSurface, &resDesc));
 }
 
 void VKTexture::setSize(int w, int h) {
@@ -490,8 +486,9 @@ void VKRenderer::createSurface() {
 
 void VKRenderer::pickPhysicalDevice() {
 	// Try to match the CUDA device by UUID
-	CUuuid cudaUUID;
-	cuDeviceGetUuid(&cudaUUID, CURuntime::device);
+	cudaDeviceProp cudaProps;
+	cudaGetDeviceProperties(&cudaProps, CURuntime::device);
+	cudaUUID_t cudaUUID = cudaProps.uuid;
 
 	uint32_t deviceCount = 0;
 	vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
@@ -819,7 +816,7 @@ void VKRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
 
 	// All barriers use VkImageMemoryBarrier2 (Vulkan 1.3 core synchronization2).
 
-	// colorTex stays GENERAL; CUDA writes synced via cuStreamSynchronize in unmapCudaVk()
+	// colorTex stays GENERAL; CUDA writes synced via cudaStreamSynchronize in unmapCudaVk()
 
 	// 2. Swapchain: UNDEFINED → GENERAL
 	{
@@ -960,8 +957,6 @@ void VKRenderer::loop(
 		camera->setSize(w, h);
 		width = w;
 		height = h;
-
-		EventQueue::instance->process();
 
 		{ // Camera update
 			Runtime::controls->update();

@@ -3,25 +3,11 @@
 
 #include <cmath>
 #include <bit>
+#include <cstdint>
 
+#include "glm/glm.hpp"
 
-#ifdef __CUDA_ARCH__
-	#include <math_constants.h>
-	constexpr float Infinity = __builtin_bit_cast(float, 0x7f800000);
-
-	// === required by GLM ===
-	#define GLM_FORCE_CUDA
-	#define CUDA_VERSION 12000
-	namespace std {
-		using size_t = ::size_t;
-	};
-	// =======================
-	#include "./glm/glm/glm.hpp"
-
-#else
-	#include <cstdint>
-	constexpr float Infinity = __builtin_bit_cast(float, 0x7f800000);
-#endif
+constexpr float Infinity = __builtin_bit_cast(float, 0x7f800000);
 
 #include "../types.h"
 
@@ -66,6 +52,3 @@ struct PotreeNode{
 	vec3 scale;
 	vec3 offset;
 };
-
-extern __constant__ RenderTarget c_target;
-

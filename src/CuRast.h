@@ -12,9 +12,7 @@
 #include "./scene/SceneNode.h"
 #include "./scene/Scene.h"
 
-#include "cuda.h"
-#include "cuda_runtime.h"
-#include "CudaModularProgram.h"
+#include <cuda_runtime.h>
 
 #include "VKRenderer.h"
 #include "OrbitControls.h"

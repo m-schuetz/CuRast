@@ -1,13 +1,13 @@
-#define CUB_DISABLE_BF16_SUPPORT
+#include <cstdint>
+#include <cstdio>
+#include <cuda_runtime.h>
 
-// === required by GLM ===
+// GLM detects CUDA via CUDA_VERSION from the driver API's cuda.h. The runtime API defines CUDART_VERSION.
+#ifndef CUDA_VERSION
+	#define CUDA_VERSION CUDART_VERSION
+#endif
 #define GLM_FORCE_CUDA
 #define GLM_FORCE_NO_CTOR_INIT
-#define CUDA_VERSION 12000
-namespace std {
-	using size_t = ::size_t;
-};
-// =======================
 
 // #include <curand_kernel.h>
 #include <cooperative_groups.h>
@@ -21,13 +21,6 @@ namespace std {
 
 namespace cg = cooperative_groups;
 
-// Kernels are compiled with NVRTC, which has no <cstdint>
-typedef unsigned int uint32_t;
-typedef int int32_t;
-typedef unsigned char uint8_t;
-typedef unsigned long long uint64_t;
-typedef long long int64_t;
-
 template<typename T>
 __device__
 T clamp(T value, T min, T max){
@@ -39,6 +32,8 @@ T clamp(T value, T min, T max){
 }
 
 #include "./HostDeviceInterface.h"
+#include "./kernels.h"
+#include "../Timer.h"
 
 using glm::ivec2;
 using glm::i8vec4;
@@ -46,7 +41,7 @@ using glm::vec4;
 
 __constant__ RenderTarget c_target;
 
-uint32_t toFramebufferIndex(int x, int y, int width){
+__device__ uint32_t toFramebufferIndex(int x, int y, int width){
 	return x + width * y;
 }
 
@@ -109,7 +104,7 @@ float getEdlShadingFactor(uint64_t* colorbuffer, float depth, int x, int y, int 
 	float response = sum / float(numSamples);
 	float edlStrength = 0.9f;
 	float shade = exp(-response * 300.0f * edlStrength);
-	shade = clamp(shade, 0.3f, 1.0f);
+	shade = ::clamp(shade, 0.3f, 1.0f);
 
 	shade = shade * 0.8f + 0.2f;
 
@@ -266,11 +261,57 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 		color = shade * color / float(numSamples);
 		uint32_t C;
 		uint8_t* rgba = (uint8_t*)&C;
-		rgba[0] = clamp(color.r, 0.0f, 255.0f);
-		rgba[1] = clamp(color.g, 0.0f, 255.0f);
-		rgba[2] = clamp(color.b, 0.0f, 255.0f);
+		rgba[0] = ::clamp(color.r, 0.0f, 255.0f);
+		rgba[1] = ::clamp(color.g, 0.0f, 255.0f);
+		rgba[2] = ::clamp(color.b, 0.0f, 255.0f);
 		rgba[3] = 255;
 
 		surf2Dwrite(C, gl_desktop, target_x * 4, target_y);
 	}
+}
+
+// ------------------------------------------------------------------------------------------------
+// Host
+// ------------------------------------------------------------------------------------------------
+
+static bool registered = 
+	registerKernel("resolve.cu", "kernel_dummy", (const void*)kernel_dummy) &&
+	registerKernel("resolve.cu", "kernel_clearFramebuffer", (const void*)kernel_clearFramebuffer) &&
+	registerKernel("resolve.cu", "kernel_resolve_colorbuffer_to_opengl_2D", (const void*)kernel_resolve_colorbuffer_to_opengl_2D);
+
+void launch_dummy(uint32_t* data){
+	kernel_dummy<<<1, 256>>>(data);
+	checkKernelLaunch("kernel_dummy");
+}
+
+void launch_clearFramebuffer(uint64_t* framebuffer, uint32_t numPixels, uint32_t clearColor, float clearDepth){
+	uint32_t blockSize = 256;
+	uint32_t gridSize = (numPixels + blockSize - 1) / blockSize;
+
+	auto start = Timer::recordCudaTimestamp();
+	kernel_clearFramebuffer<<<gridSize, blockSize>>>(framebuffer, numPixels, clearColor, clearDepth);
+	checkKernelLaunch("kernel_clearFramebuffer");
+	Timer::recordDuration("kernel_clearFramebuffer", start, Timer::recordCudaTimestamp());
+}
+
+void launch_resolveColorbufferToSurface(
+	const RenderTarget& target, cudaSurfaceObject_t surface, 
+	int width, int height, int mouseX, int mouseY, 
+	bool enableEDL, bool showInset, uint32_t backgroundColor
+){
+	cudaMemcpyToSymbolAsync(c_target, &target, sizeof(RenderTarget));
+
+	// one thread per pixel of the (possibly supersampled) render target
+	dim3 blockSize = {8, 8, 1};
+	dim3 gridSize = {
+		(uint32_t(target.width)  + blockSize.x - 1) / blockSize.x,
+		(uint32_t(target.height) + blockSize.y - 1) / blockSize.y,
+		1
+	};
+
+	auto start = Timer::recordCudaTimestamp();
+	kernel_resolve_colorbuffer_to_opengl_2D<<<gridSize, blockSize>>>(
+		surface, width, height, mouseX, mouseY, enableEDL, showInset, backgroundColor);
+	checkKernelLaunch("kernel_resolve_colorbuffer_to_opengl_2D");
+	Timer::recordDuration("kernel_resolve_colorbuffer_to_opengl_2D", start, Timer::recordCudaTimestamp());
 }
