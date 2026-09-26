@@ -66,7 +66,7 @@ Main challenge: We're using the windows API for [memory mapping](./src/MappedFil
 
 ## Getting Started
 
-You can either drag&drop glb or gltf files into the application, or modify [initScene() in main.cpp](./src/main.cpp) to load at startup and get some control over the settings. Note that glb support is limited, some/many glb files may not work. For data sets like Zorah, drag&drop won't work as Zorah is too large to fit in VRAM and requires loading with ```.compress = true```. For Venice, we also have ```.useJpegTextures``` enabled which keeps textures jpeg-compressed on the GPU to save some VRAM. 
+You can either drag&drop glb or gltf files into the application, or modify [initScene() in main.cpp](./src/main.cpp) to load at startup and get some control over the settings. Note that glb support is limited, some/many glb files may not work. For data sets like Zorah, drag&drop won't work as Zorah is too large to fit in VRAM and requires loading with ```.compress = true```. 
 
 
 ### Data Sets

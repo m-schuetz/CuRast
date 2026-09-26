@@ -30,12 +30,11 @@ void makeBenchmarking(){
 			for(Benchmarking::Scenario& scenario : Benchmarking::scenarios){
 				
 				string strC = scenario.compress ? "c" : " ";
-				string strJ = scenario.useJpegTextures ? "j" : " ";
 				string strR = scenario.imageDivisionFactor > 1 ? "h" : " ";
 				string strM = Benchmarking::isMeshoptimized(&scenario) ? "m" : " ";
 
-				string label = format("load {:<40} {} {} {} {}##benchmark_scenario_{}", 
-					scenario.label, strC, strJ, strR, strM, i
+				string label = format("load {:<40} {} {} {}##benchmark_scenario_{}", 
+					scenario.label, strC, strR, strM, i
 				);
 				if(ImGui::Button(label.c_str())){
 				// if(ImGui::Button(label.c_str(), ImVec2(400, 0))){

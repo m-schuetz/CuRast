@@ -4,8 +4,6 @@
 #include <stacktrace>
 #include <set>
 
-#include "jpg/turbojpeg.h"
-
 #include "GLTFLoader.h"
 #include "scene/SceneNode.h"
 #include "scene/SNTriangles.h"
@@ -24,71 +22,6 @@
 using namespace std; // YOLO
 
 namespace largeGlb{
-
-	constexpr float JPEG_QUALITY = 80;
-
-	bool resize_jpeg_buffer_turbo(const std::vector<uint8_t>& jpeg_input,
-		int new_width,
-		int new_height,
-		std::vector<uint8_t>& jpeg_output,
-		int quality = JPEG_QUALITY
-	){
-		tjhandle tjInstance = tjInitDecompress();
-		if (!tjInstance) {
-			std::cerr << "TurboJPEG init decompress error: " << tjGetErrorStr() << std::endl;
-			return false;
-		}
-
-		int width, height, jpegSubsamp, jpegColorspace;
-		if (tjDecompressHeader3(tjInstance, jpeg_input.data(), jpeg_input.size(),
-			&width, &height, &jpegSubsamp, &jpegColorspace) != 0)
-		{
-			std::cerr << "TurboJPEG decompress header error: " << tjGetErrorStr() << std::endl;
-			tjDestroy(tjInstance);
-			return false;
-		}
-
-		std::vector<uint8_t> decodedRGB(width * height * 3);
-		if (tjDecompress2(tjInstance, jpeg_input.data(), jpeg_input.size(),
-			decodedRGB.data(), width, 0, height, TJPF_RGB, TJFLAG_FASTDCT) != 0)
-		{
-			std::cerr << "TurboJPEG decompress error: " << tjGetErrorStr() << std::endl;
-			tjDestroy(tjInstance);
-			return false;
-		}
-
-		tjDestroy(tjInstance);
-
-		std::vector<uint8_t> resizedRGB(new_width * new_height * 3);
-
-			stbir_resize_uint8_linear(
-			decodedRGB.data(), width, height, 0,
-			resizedRGB.data(), new_width, new_height, 0,
-			STBIR_RGB
-		);
-
-
-		tjhandle tjComp = tjInitCompress();
-		if (!tjComp) {
-			std::cerr << "TurboJPEG init compress error: " << tjGetErrorStr() << std::endl;
-			return false;
-		}
-
-		unsigned char* jpegBuf = nullptr;
-		unsigned long jpegSize = 0;
-
-		if (tjCompress2(tjComp, resizedRGB.data(), new_width, 0, new_height, TJPF_RGB,
-			&jpegBuf, &jpegSize, TJSAMP_420, quality, TJFLAG_FASTDCT) != 0)
-		{
-			std::cerr << "TurboJPEG compress error: " << tjGetErrorStr() << std::endl;
-			tjDestroy(tjComp);
-			return false;
-		}
-		jpeg_output.assign(jpegBuf, jpegBuf + jpegSize);
-		tjFree(jpegBuf);
-		tjDestroy(tjComp);
-		return true;
-	}
 
 	Texture* createMipMappedTexture(uint8_t* data, int64_t width, int64_t height){
 		int64_t levels = log2(max(width, height));
@@ -136,110 +69,11 @@ namespace largeGlb{
 
 	
 
-	// Here we apply a bit of a hack:
-	// Jpeg Texture Mip Levels are stored as separate textures 
-	// because we can't compute the byte offset to another level from width and height.
-	// Therefore we create 8 mip levels and put them into the texture manager,
-	// But we only return the pointer to the original resolution.
-	Texture* createMipMappedJpegTexture(void* data, int64_t byteLength, int64_t textureWidth, int64_t textureHeight){
-
-		vector<uint8_t> u8data((uint8_t*)data, (uint8_t*)data + byteLength);
-		JPEGIndexer* jpegIndexer = new JPEGIndexer(u8data);
-
-		int numLevels = 8;
-		Texture* levels[8];
-
-		static mutex mtx;
-		mtx.lock(); // Lock because we need these 8 mip levels to be consecutive in the texture manager.
-		for (int i = 0; i < numLevels; i++) {
-			levels[i] = TextureManager::create();
-		}
-		mtx.unlock();
-
-		for (int i = 0; i < numLevels; i++) {
-
-			JPEGIndexer* indexer = nullptr;
-			int resizedWidth = max(textureWidth / pow(2, i), 4.0);
-			int resizedHeight = max(textureHeight / pow(2, i), 4.0);
-
-			if (i == 0) {
-				indexer = new JPEGIndexer(u8data);
-			} else {
-				vector<uint8_t> resized;
-				resize_jpeg_buffer_turbo(u8data, resizedWidth, resizedHeight, resized, JPEG_QUALITY);
-
-				indexer = new JPEGIndexer(resized);
-			}
-			
-			indexer->mipMapLevel = i;
-
-			Texture* texture = levels[i];
-			texture->width = resizedWidth;
-			texture->height = resizedHeight;
-
-			texture->data = (uint32_t*)MemoryManager::alloc(indexer->only_ac_data.size() + 384, "jpeg data");
-			cuMemcpyHtoD((CUdeviceptr)texture->data, indexer->only_ac_data.data(), indexer->only_ac_data.size() * sizeof(uint8_t));
-
-			texture->mcuPositions = (uint32_t*)MemoryManager::alloc(indexer->mcu_index.size() * sizeof(uint32_t), "mcuPositions");
-			cuMemcpyHtoD((CUdeviceptr)texture->mcuPositions, indexer->mcu_index.data(), indexer->mcu_index.size() * sizeof(uint32_t));
-
-			vector<HuffmanTable> huffman_table_vector;
-			for (const auto& class_entry : indexer->huffman_tables_components) {
-				for (const auto& table_entry : class_entry.second) {
-					HuffmanTable huff_table = {};
-					int temp_keys[256] = {};
-					int value_index = 0;
-					for (const auto& code_value : table_entry.second) {
-						const string& code = code_value.first;
-						int value = code_value.second;
-
-						int code_len = code.size();
-						huff_table.num_codes_per_bit_length[code_len - 1] += 1;
-						temp_keys[value_index] = std::stoi(code, nullptr, 2);
-						huff_table.huffman_values[value_index] = value;
-						value_index++;
-					}
-					// println("Number of Huffman Codes: {}", table_entry.second.size());
-
-					// Build packed[i] = (codelength << 16) | key, sorted by length (same order as
-					// map iteration for canonical JPEG Huffman codes).
-					int codeIndex = 0;
-					for (int i = 0; i < 16; i++) {
-						int codeLength = i + 1;
-						int numCodes = huff_table.num_codes_per_bit_length[i];
-						for (int j = 0; j < numCodes; j++) {
-							huff_table.packed[codeIndex] = (uint32_t(codeLength) << 16) | uint32_t(temp_keys[codeIndex]);
-							codeIndex++;
-						}
-					}
-
-					huffman_table_vector.push_back(huff_table);
-				}
-			}
-
-			texture->huffmanTables = (HuffmanTable*)MemoryManager::alloc(huffman_table_vector.size() * sizeof(HuffmanTable), "huffmanTables");
-			cuMemcpyHtoD((CUdeviceptr)texture->huffmanTables, huffman_table_vector.data(), huffman_table_vector.size() * sizeof(HuffmanTable));
-
-			vector<QuantizationTable> quant_table_vector;
-			for (const auto& quant_entry : indexer->quantization_tables) {
-				QuantizationTable quant_table = {};
-				std::copy(quant_entry.second.begin(), quant_entry.second.end(), quant_table.values);
-				quant_table_vector.push_back(quant_table);
-			}
-			texture->quanttables = (QuantizationTable*)MemoryManager::alloc(quant_table_vector.size() * sizeof(QuantizationTable), "quanttables");
-			cuMemcpyHtoD((CUdeviceptr)texture->quanttables, quant_table_vector.data(), quant_table_vector.size() * sizeof(QuantizationTable));
-			
-		}
-
-		return levels[0];
-	}
-
 	struct LoadConfig{
 		bool skipUVs = false;
 		bool skipNormals = false;
 		bool skipVertexColors = false;
 		bool compress = false;
-		bool useJpegTextures = false;
 		int imageDivisionFactor = 1;
 	};
 
@@ -559,10 +393,7 @@ namespace largeGlb{
 					double t_start = now();
 					uint8_t* imageData = stbi_load_from_memory(ptr, view.byteLength, &width, &height, &channels, 4);
 
-					if(config.useJpegTextures){
-						Texture* texture = createMipMappedJpegTexture(ptr, view.byteLength, width, height);
-						loaded->textures[task.imageIndex] = texture;
-					}else if(config.imageDivisionFactor == 1){
+					if(config.imageDivisionFactor == 1){
 						Texture* texture = createMipMappedTexture(imageData, width, height);
 						loaded->textures[task.imageIndex] = texture;
 					}else{

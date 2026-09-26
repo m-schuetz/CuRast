@@ -8,8 +8,6 @@
 #ifdef __CUDA_ARCH__
 	#include <math_constants.h>
 	constexpr float Infinity = __builtin_bit_cast(float, 0x7f800000);
-	#include "../jpeg/HashMap.cuh"
-	#include "../jpeg/JptInterface.cuh"
 
 	// === required by GLM ===
 	#define GLM_FORCE_CUDA
@@ -23,7 +21,6 @@
 #else
 	#include <cstdint>
 	constexpr float Infinity = __builtin_bit_cast(float, 0x7f800000);
-	#include "./jpeg/HashMap.cuh"
 #endif
 
 #include "../types.h"
@@ -129,10 +126,6 @@ struct DeviceState{
 	uint32_t dbg_hovered_mipLevel;
 	uint32_t dbg_hovered_tx;
 	uint32_t dbg_hovered_ty;
-	uint32_t dbg_hovered_mcu_x;
-	uint32_t dbg_hovered_mcu_y;
-	uint32_t dbg_hovered_mcu;
-	uint32_t dbg_hovered_decoded_color;
 	uint64_t dbg_fragcount;
 };
 
@@ -171,35 +164,12 @@ struct CommonLaunchArgs{
 	DeviceState* state;
 };
 
-struct HuffmanTable {
-	int num_codes_per_bit_length[16];
-	int huffman_values[256];
-	// packed[i] = (codelength << 16) | huffman_key � one load covers both per ballot lane
-	uint32_t packed[256];
-};
-
-struct QuantizationTable {
-	int values[64];
-};
-
 struct Texture{
 	int width;
 	int height;
 	uint32_t* data;
-	HuffmanTable* huffmanTables;
-	QuantizationTable* quanttables;
-	uint32_t* mcuPositions;
 	uint32_t handle;
 	bool isTranslucent;
-};
-
-struct JpegPipeline{
-	uint32_t* toDecode;
-	uint32_t* toDecodeCounter;
-	uint32_t* decoded;
-	uint32_t* TBSlots;
-	uint32_t* TBSlotsCounter;
-	HashMap decodedMcuMap;
 };
 
 struct CMesh{

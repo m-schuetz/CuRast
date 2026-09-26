@@ -13,13 +13,6 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 include(cmake/common.cmake)
 
-# Paths to TurboJPEG
-if (WIN32)
-	set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib")
-else()
-	# Ubuntu/Debian: libturbojpeg0-dev
-	find_library(TURBOJPEG_LIBRARY NAMES libturbojpeg.a turbojpeg REQUIRED)
-endif()
 
 # --------------------------------------------------------
 # Source files (C++ and CUDA)
@@ -57,12 +50,10 @@ endif()
 target_include_directories(${TARGET_NAME} PRIVATE
 	./src
 	./libs
-	${TURBOJPEG_INCLUDE_DIR}
 )
 
 add_subdirectory(libs/laszip)
 target_link_libraries(${TARGET_NAME} PRIVATE 
-	${TURBOJPEG_LIBRARY}
 	laszip
 )
 

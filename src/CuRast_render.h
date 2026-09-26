@@ -3,8 +3,6 @@
 #include <execution>
 #include <queue>
 
-#include "jpeg/JpegTextures.h"
-
 #include "Timer.h"
 #include "VKRenderer.h"
 #include "TextureManager.h"
@@ -15,7 +13,6 @@ using namespace std;
 CudaVirtualMemory* cvm_framebuffer = nullptr;
 CudaVirtualMemory* cvm_colorbuffer = nullptr;
 bool initialized = false;
-JpegTextures* jpegTextures = nullptr;
 
 // Cuda-Vulkan interop
 struct MappedTextures{
@@ -582,7 +579,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	// - Use a persistent std::vector that keeps the capacity over multiple frames
 	// - Collect a list of all mesh nodes
 	// - Then update them concurrently
-	bool hasJpegCompressedTextures = false; 
 	Mesh* hoveredMesh = nullptr;
 	static vector<SNTriangles*> nodes;
 	nodes.clear();
@@ -593,9 +589,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// if(node->mesh->numTriangles != 400) return;
 		
 		nodes.push_back(node);
-		if(node->texture){
-			hasJpegCompressedTextures = hasJpegCompressedTextures || node->texture->huffmanTables != nullptr;
-		}
 	});
 
 	process_parallel(nodes, [&](SNTriangles* node, int64_t index){
@@ -875,23 +868,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		rasterSettings.displayAttribute = CuRastSettings::displayAttribute;
 		rasterSettings.enableObjectPicking = CuRastSettings::enableObjectPicking;
 
-		JpegPipeline jpp;
-		jpp.toDecode             = (u32*)jpegTextures->cptr_toDecode;
-		jpp.toDecodeCounter      = (u32*)jpegTextures->cptr_toDecodeCounter;
-		jpp.decoded              = (u32*)jpegTextures->cptr_decoded;
-		jpp.TBSlots              = (u32*)jpegTextures->cptr_TBSlots;
-		jpp.TBSlotsCounter       = (u32*)jpegTextures->cptr_TBSlotsCounter;
-		jpp.decodedMcuMap        = *jpegTextures->decodedMcuMap;
-		
-		static CUdeviceptr cptr_textures = MemoryManager::alloc(MAX_TEXTURES * sizeof(Texture), "texture list");
-
-		if(hasJpegCompressedTextures){
-			cuMemcpyHtoD(cptr_textures, TextureManager::textures, TextureManager::numTextures * sizeof(Texture));
-			cuMemsetD32(jpegTextures->cptr_toDecodeCounter, 0, 1);
-			// cuMemsetD32(cptr_TBSlotsCounter, 0, 1);
-		}
-
-
 		{ // RESOLVE VISIBILITY BUFFER (write colors to colorbuffer)
 			void* args[] = {
 				&cvm_instances->cptr,
@@ -901,7 +877,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 				&mouse_Y,
 				&cptr_state,
 				&rasterSettings,
-				&jpp,
 			};
 			prog->launch2D("kernel_resolve_visbuffer_to_colorbuffer2D", args, target.width, target.height);
 		}
@@ -916,82 +891,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			cvm_instances->cptr, cvm_transforms->cptr, cvm_triangleCountPrefixsum->cptr,
 			target, mappings
 		);
-
-		if(hasJpegCompressedTextures){
-			u32 toDecodeCounter;
-			cuMemcpyDtoH(&toDecodeCounter, (CUdeviceptr)jpp.toDecodeCounter, 4);
-			dvlist.push_back({"toDecodeCounter ", format("{}", toDecodeCounter)});
-
-			// DECODE JPEG TEXTURES
-			jpegTextures->prog->launch("kernel_launch_decode", {
-				&jpegTextures->cptr_toDecodeCounter,
-				&jpegTextures->cptr_TBSlots, 
-				&jpegTextures->cptr_TBSlotsCounter,
-				&jpegTextures->cptr_toDecode,
-				&jpegTextures->cptr_decoded,
-				&cptr_textures,
-				// &jpegTextures->cptr_texture_pointer,
-				jpegTextures->decodedMcuMap,
-			}, 1);
-
-
-			{ // RESOLVE JPEG
-				void* args[] = {
-					&cvm_instances->cptr,
-					&numInstances,
-					&cvm_triangleCountPrefixsum->cptr,
-					&mouse_X,
-					&mouse_Y,
-					&cptr_state,
-					&rasterSettings,
-					&jpp,
-					&cptr_textures
-				};
-				prog->launch2D("kernel_resolve_jpeg", args, target.width, target.height);
-			}
-
-			{// DEBUG
-				u32 C = CuRast::deviceState->dbg_hovered_decoded_color;
-				uint8_t* rgba = (uint8_t*)&C;
-				string strColor = format("{:3}, {:3}, {:3}", rgba[0], rgba[1], rgba[2]);
-
-				dvlist.push_back({"CPU draw() duration    ", format("{:.1f} ms", Runtime::duration_draw * 1000.0)});
-				dvlist.push_back({"hovered_textureHandle  ", format("{:12}", CuRast::deviceState->dbg_hovered_textureHandle)});
-				dvlist.push_back({"hovered_mipLevel       ", format("{:12}", CuRast::deviceState->dbg_hovered_mipLevel)});
-				dvlist.push_back({"hovered_tx             ", format("{:12}", CuRast::deviceState->dbg_hovered_tx)});
-				dvlist.push_back({"hovered_ty             ", format("{:12}", CuRast::deviceState->dbg_hovered_ty)});
-				dvlist.push_back({"hovered_mcu_x          ", format("{:12}", CuRast::deviceState->dbg_hovered_mcu_x)});
-				dvlist.push_back({"hovered_mcu_y          ", format("{:12}", CuRast::deviceState->dbg_hovered_mcu_y)});
-				dvlist.push_back({"hovered_mcu            ", format("{:12}", CuRast::deviceState->dbg_hovered_mcu)});
-				dvlist.push_back({"hovered_decoded_color  ", format("{:12}", strColor)});
-			}
-		
-			cuMemsetD8((CUdeviceptr)jpegTextures->decodedMcuMap_tmp->entries, 0xff, jpegTextures->decodedMcuMap_tmp->capacity * 8);
-			// bool freezeCache = editor->settings.freezeCache;
-			bool freezeCache = false;
-			jpegTextures->prog->launch("kernel_update_cache", {
-				jpegTextures->decodedMcuMap, 
-				jpegTextures->decodedMcuMap_tmp, 
-				&jpegTextures->cptr_TBSlots,
-				&jpegTextures->cptr_TBSlotsCounter,
-				&freezeCache
-			}, jpegTextures->decodedMcuMap->capacity);
-			cuMemcpy((CUdeviceptr)jpegTextures->decodedMcuMap->entries, (CUdeviceptr)jpegTextures->decodedMcuMap_tmp->entries, jpegTextures->decodedMcuMap_tmp->capacity * 8);
-
-			// {
-			// 	// Disable caching by fully clearing the MCU slot list and hash map at the end of each frame.
-			// 	// This let's us see how much slower the decode kernel becomes.
-			// 	cuMemsetD8((CUdeviceptr)jpegTextures->decodedMcuMap->entries, 0xff, jpegTextures->decodedMcuMap->capacity * 8);
-			// 	u32 capacity = JPEG_NUM_DECODED_MCU_CAPACITY;
-			// 	jpegTextures->prog->launch("kernel_init_availableMcuSlots", {
-			// 		&jpegTextures->cptr_TBSlots, 
-			// 		&jpegTextures->cptr_TBSlotsCounter, 
-			// 		&capacity
-			// 	}, capacity,  0);
-
-			// 	cuMemsetD32(jpegTextures->cptr_TBSlotsCounter, 0, 1);
-			// }
-		}
 
 		// { // TEST: Draw Heightmap
 		// 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/triangles_heightmap.cu",});
@@ -1110,8 +1009,6 @@ void initialize(){
 
 	cvm_colorbuffer = MemoryManager::allocVirtualCuda(virtualCapacity, "colorbuffer");
 	cvm_colorbuffer->commit(8 * defaultPixels);
-
-	jpegTextures = new JpegTextures();
 
 	initialized = true;
 }

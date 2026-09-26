@@ -24,7 +24,6 @@ struct Benchmarking{
 		bool skipUVs               = false;
 		bool skipNormals           = false;
 		bool compress              = false;
-		bool useJpegTextures       = false;
 		// bool isMeshoptimized       = false;
 		int imageDivisionFactor    = 1;
 		DisplayAttribute attribute = DisplayAttribute::TEXTURE;
@@ -117,7 +116,6 @@ struct Benchmarking{
 			.label             = "Komainu Kobe",
 			.skipNormals       = false,
 			.compress          = false,
-			.useJpegTextures   = false,
 			.transform         = mat4(1.0),
 			.view_closeup = {
 				.yaw       = -22.094,
@@ -137,7 +135,6 @@ struct Benchmarking{
 			.label             = "Komainu Kobe",
 			.skipNormals       = false,
 			.compress          = false,
-			.useJpegTextures   = false,
 			.transform         = mat4(1.0),
 			.view_closeup = {
 				.yaw       = -22.094,
@@ -157,7 +154,6 @@ struct Benchmarking{
 			.label             = "Venice",
 			.skipNormals       = true, // We're not benchmarking shading, and we need that extra GPU memory
 			.compress          = false,
-			.useJpegTextures   = true,
 			// .isMeshoptimized   = false,
 			.transform         = mat4(1.0),
 			.view_closeup = {
@@ -178,7 +174,6 @@ struct Benchmarking{
 			.label             = "Venice",
 			.skipNormals       = true, // We're not benchmarking shading, and we need that extra GPU memory
 			.compress          = false,
-			.useJpegTextures   = true,
 			.transform         = mat4(1.0),
 			.view_closeup = {
 				.yaw       = -24.381,
@@ -198,7 +193,6 @@ struct Benchmarking{
 			.label               = "Venice",
 			.skipNormals         = true, // We're not benchmarking shading, and we need that extra GPU memory
 			.compress            = false,
-			.useJpegTextures     = false,
 			.imageDivisionFactor = 2,
 			.transform           = mat4(1.0),
 			.view_closeup = {
@@ -219,7 +213,6 @@ struct Benchmarking{
 			.label               = "Venice",
 			.skipNormals         = true, // We're not benchmarking shading, and we need that extra GPU memory
 			.compress            = false,
-			.useJpegTextures     = false,
 			.imageDivisionFactor = 2,
 			.transform           = mat4(1.0),
 			.view_closeup = {
@@ -240,7 +233,6 @@ struct Benchmarking{
 			.label               = "Venice",
 			.skipNormals         = true, // We're not benchmarking shading, and we need that extra GPU memory
 			.compress            = true,
-			.useJpegTextures     = false,
 			.imageDivisionFactor = 2,
 			.transform           = mat4(1.0),
 			.view_closeup = {
@@ -261,7 +253,6 @@ struct Benchmarking{
 			.label               = "Venice",
 			.skipNormals         = true, // We're not benchmarking shading, and we need that extra GPU memory
 			.compress            = true,
-			.useJpegTextures     = false,
 			.imageDivisionFactor = 2,
 			.transform           = mat4(1.0),
 			.view_closeup = {
@@ -282,7 +273,6 @@ struct Benchmarking{
 			.label             = "Zorah",
 			.skipUVs           = true,
 			.compress          = true,
-			.useJpegTextures   = false,
 			.attribute         = DisplayAttribute::NONE,
 			.transform         = mat4(
 				1.000,  0.000, 0.000, 0.000,
@@ -314,7 +304,6 @@ struct Benchmarking{
 			.label             = "Zorah",
 			.skipUVs           = true,
 			.compress          = true,
-			.useJpegTextures   = false,
 			.attribute         = DisplayAttribute::NONE,
 			.transform         = mat4(
 				1.000,  0.000, 0.000, 0.000,

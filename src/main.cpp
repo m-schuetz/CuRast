@@ -16,7 +16,6 @@
 #include "CudaModularProgram.h"
 #include "CudaVulkanSharedMemory.h"
 #include "VulkanCudaSharedMemory.h"
-#include "jpeg/JPEGIndexer.h"
 
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -302,7 +301,6 @@ void update(){
 			.skipUVs = scenario->skipUVs,
 			.skipNormals = scenario->skipNormals,
 			.compress = scenario->compress,
-			.useJpegTextures = scenario->useJpegTextures,
 			.imageDivisionFactor = scenario->imageDivisionFactor,
 		});
 		glb->glbNode->name = scenario->label;

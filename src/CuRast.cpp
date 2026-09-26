@@ -211,17 +211,6 @@ void CuRast::postFrame(){
 
 		string sceneName = scene.world->children[0]->name;
 
-		bool usesJpegTextures = false;
-		for(int i = 0; i < TextureManager::numTextures; i++){
-			Texture* texture = &TextureManager::textures[i];
-			bool isJpeg = texture->huffmanTables != nullptr;
-
-			if(isJpeg){
-				usesJpegTextures = true;
-				break;
-			}
-		}
-
 		bool hasCompressedGeometry = false;
 		scene.forEach<SNTriangles>([&](SNTriangles* node){
 			if(node->mesh->compressed){
@@ -247,7 +236,6 @@ void CuRast::postFrame(){
 		println("method                  {}", method);
 		println("device                  {}", strDeviceName);
 		println("datetime                {}", datetime);
-		println("usesJpegTextures        {}", usesJpegTextures);
 		println("hasCompressedGeometry   {}", hasCompressedGeometry);
 		println("duration_raster(mean)   {}", mean_raster);
 		println("duration_resolve(mean)  {}", mean_resolve);
@@ -298,7 +286,6 @@ void CuRast::postFrame(){
 			{"method",                method},
 			{"device",                strDeviceName},
 			{"datetime",              datetime},
-			{"usesJpegTextures",      usesJpegTextures},
 			{"imageDivisionFactor",   scenario->imageDivisionFactor},
 			{"hasCompressedGeometry", hasCompressedGeometry},
 			{"instances", {
@@ -322,7 +309,6 @@ void CuRast::postFrame(){
 
 		string strKey = scenario->label;
 		if(scenario->compress) strKey += "_compressed";
-		if(scenario->useJpegTextures) strKey += "_jpeg";
 		if(scenario->path.contains("optimized")) strKey += "_optimized";
 		if(scenario->imageDivisionFactor != 1) strKey += format("_texDivider{}", scenario->imageDivisionFactor);
 		strKey += "_" + strDeviceName;
