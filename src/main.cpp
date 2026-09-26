@@ -34,6 +34,8 @@
 #include "PlyLoader.h"
 #include "types.h"
 #include "scene/LasfileNode.h"
+#include "scene/PotreeFileNode.h"
+
 
 
 
@@ -256,15 +258,32 @@ void initScene() {
 	Runtime::controls->radius = 142.656;
 	Runtime::controls->target = { -2.859, 21.085, -5.387, };
 
-	string file = "/home/mschuetz/dev/resources/morro_bay_73M.las";
-	shared_ptr<LasfileNode> node = make_shared<LasfileNode>(file, "pointcloud");
+	// string file = "/home/mschuetz/dev/resources/morro_bay_73M.las";
+	// shared_ptr<LasfileNode> node = make_shared<LasfileNode>(file, "pointcloud");
+	// scene.root->children.push_back(node);
 
+	// vec3 center = (node->min + node->max) * 0.5f - node->offset;
+	// Runtime::controls->target = center;
+	// Runtime::controls->radius = 0.8f * length(node->max - node->min);
+	// Runtime::controls->pitch  = -0.9;
+
+
+	string file = "/home/mschuetz/dev/resources/morro_bay_73M.laz_converted";
+	shared_ptr<PotreeFileNode> node = make_shared<PotreeFileNode>(file, "potree");
 	scene.root->children.push_back(node);
 
-	vec3 center = (node->min + node->max) * 0.5f - node->offset;
-	Runtime::controls->target = center;
-	Runtime::controls->radius = 0.8f * length(node->max - node->min);
+	PotreeAttribute* position = node->findAttribute("position");
+	dvec3 tightMin = {position->min[0], position->min[1], position->min[2]};
+	dvec3 tightMax = {position->max[0], position->max[1], position->max[2]};
+	dvec3 origin   = (node->min + node->max) * 0.5;
+
+	Runtime::controls->target = (tightMin + tightMax) * 0.5 - origin;
+	Runtime::controls->radius = 0.8 * length(tightMax - tightMin);
 	Runtime::controls->pitch  = -0.9;
+
+
+
+	
 }
 
 void update(){

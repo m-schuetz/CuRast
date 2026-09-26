@@ -1,6 +1,7 @@
 
 #include <unordered_set>
 #include <execution>
+#include <queue>
 
 #include "jpeg/JpegTextures.h"
 
@@ -99,6 +100,25 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 
 #include "CuRast_vulkanRender.h"
 #include "scene/LasfileNode.h"
+#include "scene/PotreeFileNode.h"
+
+// Whether kernels can directly access pageable host memory, e.g. memory-mapped files (HMM on linux).
+bool canAccessPageableMemory(){
+	static bool supported = [](){
+		CUdevice device;
+		cuCtxGetDevice(&device);
+		int supported = 0;
+		cuDeviceGetAttribute(&supported, CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS, device);
+
+		if(!supported){
+			println("WARNING: GPU can not access pageable host memory. Memory-mapped point clouds will not be rendered.");
+		}
+
+		return supported != 0;
+	}();
+
+	return supported;
+}
 
 void drawPoints(Scene* scene, View view, RenderTarget& target){
 	
@@ -134,6 +154,192 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 	
 }
 
+// Renders PotreeFileNodes directly from their memory-mapped octree.bin. 
+// - Traverses the octrees of all potree files from largest to smallest nodes in screen space, 
+//   skipping nodes outside the view frustum, until the point budget is reached. 
+// - Points are rendered in a coordinate system centered at the bounding box of each potree file.
+// Requires GPU access to pageable host memory (e.g. HMM on linux).
+void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
+
+	constexpr u64 POINT_BUDGET = 5'000'000;
+	
+	static CudaModularProgram* prog = new CudaModularProgram({
+		.modules = {"./src/kernels/potreeFileRenderer.cu",}
+	});
+
+	if(!canAccessPageableMemory()) return;
+
+	vector<PotreeFileNode*> files;
+	scene->forEach<PotreeFileNode>([&](PotreeFileNode* file){
+		if(file->mapped_octree == nullptr) return;
+		if(file->hierarchyNodes.empty()) return;
+		if(file->encoding != "DEFAULT") return;
+
+		files.push_back(file);
+	});
+
+	if(files.empty()) return;
+
+	struct Plane{
+		dvec3 normal;
+		double d;
+	};
+
+	// per potree file state for the traversal
+	struct FileState{
+		PotreeFileNode* file;
+		dvec3 center;       // bounding box center, becomes the origin of the rendered coordinate system
+		dmat4 worldView;
+		Plane planes[4];    // frustum side planes, relative to center
+		i64 offset_color;
+	};
+
+	vector<FileState> states;
+	for(PotreeFileNode* file : files){
+		FileState state;
+		state.file = file;
+		state.center = (file->min + file->max) * 0.5;
+		state.worldView = view.view * file->transform_global;
+
+		dmat4 worldViewProj = view.proj * state.worldView;
+		dvec4 row0 = glm::row(worldViewProj, 0);
+		dvec4 row1 = glm::row(worldViewProj, 1);
+		dvec4 row3 = glm::row(worldViewProj, 3);
+
+		auto normalizedPlane = [](dvec4 p){
+			double length = glm::length(dvec3(p));
+			return Plane{dvec3(p) / length, p.w / length};
+		};
+
+		state.planes[0] = normalizedPlane(row3 + row0); // Left
+		state.planes[1] = normalizedPlane(row3 - row0); // Right
+		state.planes[2] = normalizedPlane(row3 + row1); // Bottom
+		state.planes[3] = normalizedPlane(row3 - row1); // Top
+
+		PotreeAttribute* rgb = file->findAttribute("rgb");
+		state.offset_color = rgb ? rgb->byteOffset : -1;
+
+		states.push_back(state);
+	}
+
+	// boxes are relative to the file's center
+	auto isInsideFrustum = [](const FileState& state, dvec3 min, dvec3 max){
+		for(const Plane& plane : state.planes){
+			dvec3 positiveVertex = {
+				plane.normal.x >= 0.0 ? max.x : min.x,
+				plane.normal.y >= 0.0 ? max.y : min.y,
+				plane.normal.z >= 0.0 ? max.z : min.z,
+			};
+
+			if(dot(plane.normal, positiveVertex) + plane.d < 0.0) return false;
+		}
+
+		return true;
+	};
+
+	// approximate radius of the node's bounding sphere in pixels
+	double projectionFactor = abs(view.proj[1][1]) * 0.5 * double(target.height);
+	auto getScreenSize = [&](const FileState& state, dvec3 min, dvec3 max) -> double {
+		dvec3 center_view = dvec3(state.worldView * dvec4((min + max) * 0.5, 1.0));
+		double radius = 0.5 * glm::length(dvec3(state.worldView * dvec4(max - min, 0.0)));
+		double distance = glm::length(center_view);
+
+		// camera inside the node's bounding sphere
+		if(distance <= radius) return std::numeric_limits<double>::infinity();
+
+		return projectionFactor * radius / distance;
+	};
+
+	struct QueueItem{
+		i32 stateIndex;
+		i32 nodeIndex;
+		double screenSize;
+	};
+	auto smallerScreenSize = [](const QueueItem& a, const QueueItem& b){ return a.screenSize < b.screenSize; };
+	std::priority_queue<QueueItem, vector<QueueItem>, decltype(smallerScreenSize)> queue(smallerScreenSize);
+
+	for(i32 stateIndex = 0; stateIndex < states.size(); stateIndex++){
+		const FileState& state = states[stateIndex];
+		const PotreeHierarchyNode& root = state.file->hierarchyNodes[0];
+		dvec3 min = root.min - state.center;
+		dvec3 max = root.max - state.center;
+
+		if(!isInsideFrustum(state, min, max)) continue;
+
+		queue.push({stateIndex, 0, getScreenSize(state, min, max)});
+	}
+
+	// Traverse from largest to smallest nodes in screen space, until the point budget is reached
+	static vector<PotreeNode> visibleNodes;
+	visibleNodes.clear();
+	u64 numVisiblePoints = 0;
+
+	while(!queue.empty()){
+		QueueItem item = queue.top();
+		queue.pop();
+
+		FileState& state = states[item.stateIndex];
+		PotreeFileNode* file = state.file;
+
+		// proxies only know their point count, not yet where their points are
+		file->loadHierarchyChunk(item.nodeIndex);
+		const PotreeHierarchyNode& node = file->hierarchyNodes[item.nodeIndex];
+
+		if(numVisiblePoints + node.numPoints > POINT_BUDGET) break;
+
+		numVisiblePoints += node.numPoints;
+
+		PotreeNode visibleNode;
+		visibleNode.data            = (u8*)file->mapped_octree + node.byteOffset;
+		visibleNode.numPoints       = node.numPoints;
+		visibleNode.offset_color    = state.offset_color >= 0 ? state.offset_color : ~0ull;
+		visibleNode.worldView       = mat4(state.worldView);
+		visibleNode.bytesPerPoint   = file->bytesPerPoint;
+		visibleNode.offset_position = file->findAttribute("position")->byteOffset;
+		visibleNode.scale           = vec3(file->scale);
+		visibleNode.offset          = vec3(file->offset - state.center);
+		visibleNodes.push_back(visibleNode);
+
+		for(i32 childIndex : node.children){
+			if(childIndex < 0) continue;
+
+			const PotreeHierarchyNode& child = file->hierarchyNodes[childIndex];
+			dvec3 min = child.min - state.center;
+			dvec3 max = child.max - state.center;
+
+			if(!isInsideFrustum(state, min, max)) continue;
+
+			queue.push({item.stateIndex, childIndex, getScreenSize(state, min, max)});
+		}
+	}
+
+	if(visibleNodes.size() > 0){
+
+		// upload list of visible nodes
+		static CUdeviceptr cptr_nodes = 0;
+		static u64 capacity = 0;
+		if(visibleNodes.size() > capacity){
+			if(cptr_nodes != 0) MemoryManager::free(cptr_nodes);
+
+			capacity = std::max<u64>(2 * visibleNodes.size(), 1'000);
+			cptr_nodes = MemoryManager::alloc(capacity * sizeof(PotreeNode), "potree visible nodes");
+		}
+		cuMemcpyHtoD(cptr_nodes, visibleNodes.data(), byteSizeOf(visibleNodes));
+
+		u64 numNodes = visibleNodes.size();
+		void* args[] = {
+			&target,
+			&cptr_nodes,
+			&numNodes
+		};
+		prog->launch("kernel_drawPotreeFileNodes", args, {.gridsize = u32(numNodes), .blocksize = 256});
+	}
+
+	auto& dvlist = Runtime::debugValueList;
+	dvlist.push_back({"potree nodes", format("{:L}", visibleNodes.size())});
+	dvlist.push_back({"potree points", format("{:L}", numVisiblePoints)});
+}
+
 // Renders LasfileNodes directly from their memory-mapped files. 
 // Requires GPU access to pageable host memory (e.g. HMM on linux).
 void drawLasPoints(Scene* scene, View view, RenderTarget& target){
@@ -142,20 +348,7 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 		.modules = {"./src/kernels/laspoints.cu",}
 	});
 
-	static bool pageableMemoryAccess = [](){
-		CUdevice device;
-		cuCtxGetDevice(&device);
-		int supported = 0;
-		cuDeviceGetAttribute(&supported, CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS, device);
-
-		if(!supported){
-			println("WARNING: GPU can not access pageable host memory. Memory-mapped las files will not be rendered.");
-		}
-
-		return supported != 0;
-	}();
-
-	if(!pageableMemoryAccess) return;
+	if(!canAccessPageableMemory()) return;
 	
 	vector<LasfileNode*> nodes;
 	scene->forEach<LasfileNode>([&](LasfileNode* node){
@@ -715,6 +908,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		
 		drawPoints(scene, view, target);
 		drawLasPoints(scene, view, target);
+		drawPotreeFiles(scene, view, target);
 		
 		drawTrianglesTranslucent(
 			scene, view, meshes_unique_translucent, meshes_allInstances, 

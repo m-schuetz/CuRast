@@ -21,9 +21,12 @@
 	#include "./glm/glm/glm.hpp"
 
 #else
+	#include <cstdint>
 	constexpr float Infinity = __builtin_bit_cast(float, 0x7f800000);
 	#include "./jpeg/HashMap.cuh"
 #endif
+
+#include "../types.h"
 
 
  using glm::vec2;
@@ -239,6 +242,23 @@ struct CMesh{
 	} impostor;
 };
 
+
+struct PotreeNode{
+	u8* data; // Pointer to the memory-mapped location of this octree node
+	u64 numPoints;
+	u64 offset_color;      // byte offset of uint16 rgb within a point. Set to >= bytesPerPoint if there is no rgb.
+	mat4 worldView;
+
+	// Points are stored interleaved with bytesPerPoint stride, positions as int32 xyz.
+	// Decoded position: vec3(xyz) * scale + offset
+	// - offset should be relative to a nearby origin (e.g. metadata offset minus bounding box center), 
+	//   computed in double on host and only then converted to float, to keep precision reasonable. 
+	u64 bytesPerPoint;
+	u64 offset_position;   // byte offset of int32 xyz within a point
+	vec3 scale;
+	vec3 offset;
+};
+
 // struct InstanceData{
 // 	mat4 transform;
 // 	bool flip;
@@ -339,3 +359,4 @@ struct RasterArgs{
 };
 
 extern __constant__ RenderTarget c_target;
+
