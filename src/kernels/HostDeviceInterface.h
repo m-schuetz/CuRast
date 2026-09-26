@@ -147,12 +147,5 @@ struct PotreeNode{
 	vec3 offset;
 };
 
-struct CPointcloud{
-	mat4 world;
-	vec3* positions;
-	uint32_t* colors;
-	uint32_t numPoints;
-};
-
 extern __constant__ RenderTarget c_target;
 

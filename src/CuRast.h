@@ -10,7 +10,6 @@
 
 #include "./scene/SceneNode.h"
 #include "./scene/Scene.h"
-#include "./scene/SNPoints.h"
 
 #include "cuda.h"
 #include "cuda_runtime.h"
