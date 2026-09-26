@@ -19,7 +19,6 @@
 #include <glm/gtx/matrix_decompose.hpp>
 
 
-#include "Runtime.h"
 #include "CuRast.h"
 #include "types.h"
 #include "scene/LasfileNode.h"

@@ -1,6 +1,6 @@
 
 #include "VKRenderer.h"
-#include "Runtime.h"
+#include "CuRast.h"
 #include "Timer.h"
 #include "CURuntime.h"
 #include "CuRastSettings.h"
@@ -20,13 +20,11 @@ static void error_callback(int error, const char* description) {
 }
 
 static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
-	if (key < 0 || key >= (int)Runtime::keyStates.size()) return;
+	if (key == GLFW_KEY_UNKNOWN) return;
 
 	if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
 		glfwSetWindowShouldClose(window, GLFW_TRUE);
 
-	Runtime::keyStates[key] = action;
-	Runtime::mods           = mods;
 	Runtime::frame_keys.push_back(key);
 	Runtime::frame_actions.push_back(action);
 	Runtime::frame_mods.push_back(mods);
@@ -52,11 +50,6 @@ static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) 
 static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
 	ImGuiIO& io = ImGui::GetIO();
 	if (io.WantCaptureMouse) return;
-
-	if (action == 1)
-		Runtime::mouseButtons = Runtime::mouseButtons | (1 << button);
-	else if (action == 0)
-		Runtime::mouseButtons = Runtime::mouseButtons & ~(1 << button);
 
 	Runtime::controls->onMouseButton(button, action, mods);
 	Runtime::mouseEvents.onMouseButton(button, action, mods);

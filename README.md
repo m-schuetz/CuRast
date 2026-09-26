@@ -94,7 +94,7 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds at startup
 | [src/scene/LasfileNode.h](src/scene/LasfileNode.h), [src/scene/PotreeFileNode.h](src/scene/PotreeFileNode.h) | Scene nodes for memory-mapped LAS files and Potree 2.0 octrees |
 | [src/kernels/laspoints.cu](src/kernels/laspoints.cu), [src/kernels/potreeFileRenderer.cu](src/kernels/potreeFileRenderer.cu) | CUDA kernels that render points directly from memory-mapped files |
 | [src/kernels/resolve.cu](src/kernels/resolve.cu) | Transforms the color buffer to a texture for display, including EDL |
-| [src/CuRast_render.h](src/CuRast_render.h) | Host-side draw code that launches the kernels, including the octree traversal for Potree files.  |
+| [src/CuRast.cpp](src/CuRast.cpp) | Host-side draw code that launches the kernels, including the octree traversal for Potree files.  |
 
 #### Known Issues
 
