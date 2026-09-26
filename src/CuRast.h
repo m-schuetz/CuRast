@@ -10,7 +10,6 @@
 
 #include "./scene/SceneNode.h"
 #include "./scene/Scene.h"
-#include "./scene/SNTriangles.h"
 #include "./scene/SNPoints.h"
 #include "./scene/SNCPoints.h"
 
@@ -26,7 +25,6 @@
 #include "stb/stb_image_resize2.h"
 #include "Runtime.h"
 #include "CuRastSettings.h"
-#include "Benchmarking.h"
 
 using glm::transpose;
 using glm::vec2;

@@ -41,23 +41,6 @@ constexpr uint64_t DEFAULT_PIXEL = (uint64_t(0x7f800000) << 32) | BACKGROUND_COL
 // Rendering las files directly from the memory-mapped file is limited to the first N points
 constexpr uint64_t MAX_LAS_POINTS = 2'000'000;
 
-constexpr uint32_t RASTERIZER_BASIC = 0;
-constexpr uint32_t RASTERIZER_VISBUFFER = 1;
-constexpr uint32_t RASTERIZER_OPENGL = 2;
-constexpr uint32_t RASTERIZER_VISBUFFER2 = 3;
-constexpr uint32_t RASTERIZER_VISBUFFER_SERIALIZED = 4;
-constexpr uint32_t RASTERIZER_VISBUFFER_SCANLINE = 5;
-constexpr uint32_t RASTERIZER_VISBUFFER_16BYTE_ALIGNED = 6;
-constexpr uint32_t RASTERIZER_FORWARD = 7;
-constexpr uint32_t RASTERIZER_VISBUFFER_INDEXED = 8;
-//constexpr uint32_t RASTERIZER_VISBUFFER_CLUSTERS = 9;
-constexpr uint32_t RASTERIZER_VISBUFFER_INSTANCED = 10;
-constexpr uint32_t RASTERIZER_VULKAN = 11;
-constexpr uint32_t RASTERIZER_VULKAN_INDEXPULLING = 12;
-constexpr uint32_t RASTERIZER_VULKAN_INDEXED_DRAW = 13;
-constexpr uint32_t RASTERIZER_VULKAN_INDEXPULLING_VISBUFFER = 14;
-constexpr uint32_t RASTERIZER_VULKAN_INDEXPULLING_INSTANCED = 15;
-
 struct Box3 {
 	vec3 min = { Infinity, Infinity, Infinity };
 	vec3 max = { -Infinity, -Infinity, -Infinity };
@@ -110,22 +93,6 @@ struct Box3 {
 
 struct DeviceState{
 	int counter;
-	uint32_t numSmall;
-	uint32_t numLarge;
-	uint32_t numMassive;
-	// uint32_t numNontrivial;
-	uint64_t nanotime_start;
-	uint64_t nanotime_stage_1;
-	uint64_t nanotime_stage_2;
-	uint64_t nanotime_stage_3;
-
-	int32_t hovered_meshId;
-	int32_t hovered_triangleIndex;
-
-	uint32_t dbg_hovered_textureHandle;
-	uint32_t dbg_hovered_mipLevel;
-	uint32_t dbg_hovered_tx;
-	uint32_t dbg_hovered_ty;
 	uint64_t dbg_fragcount;
 };
 
@@ -164,54 +131,12 @@ struct CommonLaunchArgs{
 	DeviceState* state;
 };
 
-struct Texture{
-	int width;
-	int height;
-	uint32_t* data;
-	uint32_t handle;
-	bool isTranslucent;
-};
 
-struct CMesh{
-	uint32_t numTriangles;
-	uint32_t* indices;
-	vec3* positions;
-	uint64_t cummulativeTriangleCount; // sum of all triangles in prior CMesh instances
-	Box3 aabb;
-	vec3 compressionFactor;
-	uint32_t index_min;
-	uint32_t bitsPerIndex;
-
-	struct{
-		int offset;
-		int count;
-	} instances;
-
+// Box drawn as lines, e.g. the bounding box of a scene node
+struct BoundingBox{
 	mat4 world;
-	int id;
-	vec2* uvs;
-	vec3* normals;
-	uint32_t* colors;
-	uint32_t firstTriangle;
-	uint32_t numVertices;
-	uint32_t index_max;
-	uint64_t address;
-
-
-	Texture texture;
-
-	bool isLoaded;
-	bool flipTriangles;
-	bool compressed;
-
-
-	struct{
-		vec3* positions;
-		uint32_t* colors;
-		uint32_t numPoints;
-	} impostor;
+	Box3 aabb;
 };
-
 
 struct PotreeNode{
 	u8* data; // Pointer to the memory-mapped location of this octree node
@@ -229,103 +154,11 @@ struct PotreeNode{
 	vec3 offset;
 };
 
-// struct InstanceData{
-// 	mat4 transform;
-// 	bool flip;
-// };
-
 struct CPointcloud{
 	mat4 world;
 	vec3* positions;
 	uint32_t* colors;
 	uint32_t numPoints;
-};
-
-// struct Instances{
-// 	uint32_t meshIndex;
-// 	uint32_t numInstances;
-// 	mat4* transforms;
-// };
-
-struct HugeTriangle{
-	int meshIndex;
-	int triangleIndex;
-	int tile_x;
-	int tile_y;
-};
-
-struct TranslucentTriangle{
-	int meshIndex;
-	int triangleIndex;
-	int tile_x;
-	int tile_y;
-};
-
-constexpr int TILE_SIZE = 64;
-constexpr int TILE_SIZE_TRANSLUCENT = 16;
-constexpr uint32_t TRIANGLES_PER_SWEEP = 256;
-constexpr uint32_t MAX_HUGE_TRIANGLES = 5'000'000;
-constexpr uint32_t MAX_TRANSLUCENT_TRIANGLES = 5'000'000;
-constexpr uint32_t MAX_NONTRIVIAL_TRIANGLES = 5'000'000;
-constexpr uint32_t THRESHOLD_SMALL = 128;
-constexpr uint32_t THRESHOLD_LARGE = 4096;
-constexpr uint32_t TRIANGLES_PER_CHUNK = 128;
-
-//constexpr float NEAR = 0.01f;
-constexpr uint64_t PACKMASK_MESHINDEX = 0b111'1111'1111'1111; // 15 bit
-constexpr uint64_t PACKMASK_TRIANGLEINDEX = 0b1'1111'1111'1111'1111'1111'1111; // 25 bit
-// constexpr float INFINITY_F32 = INFINITY; // 1.0f / 0.0f;
-// constexpr float INFINITY_F32 = 0x7F800000u; // 1.0f / 0.0f;
-// constexpr float NEAR = 0.01f;
-// constexpr float INFINITY_F32 = __builtin_huge_valf();
-
-enum class DisplayAttribute : int{
-	NONE,
-	TEXTURE,
-	UV,
-	NORMAL,
-	VERTEX_COLORS,
-	TRIANGLE_ID,
-	MESH_ID,
-	STAGE,
-};
-
-struct RasterizationSettings{
-	bool showWireframe;
-	bool enableDiffuseLighting;
-	bool enableObjectPicking;
-	DisplayAttribute displayAttribute;
-};
-
-struct IndexbufferCompressInfo{
-	uint32_t* uncompressedIndices;
-	void* compressedIndices;
-	uint32_t numIndices;
-	uint32_t minIndex;
-	uint32_t maxIndex;
-};
-
-enum class IndexFetch{DIRECT, INDEXBUFFER};
-enum class Compression{UNCOMPRESSED, IX_PU16};
-enum class Instancing{NO, YES};
-
-
-
-struct RasterArgs{
-	CMesh* meshes;
-	uint32_t numMeshes;
-	CMesh* instances;
-	uint32_t numInstances;
-	mat4* transforms;
-	uint32_t* numProcessedBatches;
-	uint32_t* numProcessedBatches_nontrivial;
-	HugeTriangle* hugeTriangles;
-	uint32_t* hugeTrianglesCounter;
-	uint32_t* numProcessedHugeTriangles;
-	uint32_t* nontrivialTrianglesCounter;
-	uint64_t* nontrivialTrianglesList;
-	RenderTarget target;
-	DeviceState* state;
 };
 
 extern __constant__ RenderTarget c_target;

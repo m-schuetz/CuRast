@@ -155,10 +155,6 @@ void drawLine(vec3 start, vec3 end, uint32_t color = 0xff0000ff){
 		float depth = pos_ndc.z;
 
 		if(depth > 0.0f){
-			// depth = 0.1f;
-			// int meshIndex = PACKMASK_MESHINDEX; 
-			// int triangleIndex = PACKMASK_TRIANGLEINDEX;
-			// uint64_t pixel = pack_pixel(depth, meshIndex, triangleIndex);
 			uint64_t udepth = __float_as_uint(depth);
 			uint64_t pixel = (udepth << 32) | color;
 			atomicMin(&c_target.framebuffer[pixelID], pixel);
@@ -171,19 +167,19 @@ void drawLine(vec3 start, vec3 end, uint32_t color = 0xff0000ff){
 
 extern "C" __global__
 void kernel_drawBoundingBoxes(
-	CMesh* meshes,
-	uint32_t numMeshes,
+	BoundingBox* boxes,
+	uint32_t numBoxes,
 	uint32_t* numProcessedBatches
 ) {
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
-	__shared__ int sh_meshIndex;
-	__shared__ CMesh sh_mesh;
+	__shared__ int sh_boxIndex;
+	__shared__ BoundingBox sh_box;
 
 	if (block.thread_rank() == 0){
-		sh_meshIndex = 0;
-		sh_mesh = meshes[0];
+		sh_boxIndex = 0;
+		sh_box = boxes[0];
 	}
 
 	grid.sync();
@@ -192,26 +188,23 @@ void kernel_drawBoundingBoxes(
 
 	while (true){
 
-		// Check which batch of triangles this block should render next.
+		// Check which box this block should render next.
 		block.sync();
 		if (block.thread_rank() == 0){
-			sh_meshIndex = atomicAdd(numProcessedBatches, 1);
+			sh_boxIndex = atomicAdd(numProcessedBatches, 1);
 		}
 		block.sync();
 
-		sh_mesh = meshes[sh_meshIndex];
+		if (sh_boxIndex >= numBoxes) break;
 
-		// TODO: Consider return, labeled break, or goto instead to leave both loops
-		if (sh_meshIndex >= numMeshes) break;
+		sh_box = boxes[sh_boxIndex];
 
-		// if(sh_mesh.isLoaded) continue;
-
-		Box3 aabb = sh_mesh.aabb;
+		Box3 aabb = sh_box.aabb;
 		vec3 worldMin = {Infinity, Infinity, Infinity};
 		vec3 worldMax = {-Infinity, -Infinity, -Infinity};
 
 		auto sample = [&](vec3 pos){
-			vec3 worldPos = sh_mesh.world * vec4(pos, 1.0f);
+			vec3 worldPos = sh_box.world * vec4(pos, 1.0f);
 			worldMin.x = min(worldMin.x, worldPos.x);
 			worldMin.y = min(worldMin.y, worldPos.y);
 			worldMin.z = min(worldMin.z, worldPos.z);
@@ -231,7 +224,6 @@ void kernel_drawBoundingBoxes(
 
 		block.sync();
 
-		// if(sh_meshIndex == 1)
 		{
 
 			// if(block.thread_rank() == 0) printf("%.1f, %.1f, %.1f \n", aabb.min.x, aabb.min.y, aabb.min.z);
@@ -259,10 +251,12 @@ void kernel_drawBoundingBoxes(
 #ifndef __CUDACC_RTC__
 
 __host__
+// target is passed by reference: nvcc and the host compiler may disagree on whether
+// RenderTarget (glm types) is trivially copyable, which changes how it is passed by value.
 void launch_drawBoundingBoxes(
-	RenderTarget target,
-	CMesh* meshes,
-	uint32_t numMeshes,
+	const RenderTarget& target,
+	BoundingBox* boxes,
+	uint32_t numBoxes,
 	uint32_t* numProcessedBatches
 ) {
 	
@@ -289,8 +283,8 @@ void launch_drawBoundingBoxes(
 	cudaMemcpyToSymbol(c_target, &target, sizeof(target));
 
 	void* kernel_args[] = {
-		&meshes,
-		&numMeshes,
+		&boxes,
+		&numBoxes,
 		&numProcessedBatches,
 	};
 

@@ -1,7 +1,13 @@
 #pragma once 
 
+#include <mutex>
+#include <vector>
+#include <string>
+
 #include "cuda.h"
-#include "VulkanCudaSharedMemory.h"
+#include "CURuntime.h"
+#include "CudaVirtualMemory.h"
+#include "VKRenderer.h"
 
 // Usage flags are a strong contended for dumbest things in Vulkan. Just give me device memory...
 constexpr VkBufferUsageFlags DEFAULT_USAGE_FLAGS = 
@@ -21,16 +27,7 @@ struct MemoryManager{
 	inline static mutex mtx;
 	inline static vector<Allocation> allocations;
 	inline static vector<VKBuffer*> allocations_vulkan;
-	inline static vector<VulkanCudaSharedMemory*> vulkanCudaShared;
 	inline static vector<CudaVirtualMemory*> cudaVirtual;
-
-	inline static VulkanCudaSharedMemory* allocVulkanCudaShared(uint64_t virtualCapacity, string label = "none"){
-
-		VulkanCudaSharedMemory* memory = VulkanCudaSharedMemory::create(virtualCapacity, label);
-		vulkanCudaShared.push_back(memory);
-
-		return memory;
-	}
 
 	inline static CudaVirtualMemory* allocVirtualCuda(uint64_t virtualCapacity, string label = "none"){
 
@@ -110,10 +107,6 @@ struct MemoryManager{
 
 		for(auto memory : allocations_vulkan){
 			bytes += memory->size;
-		}
-
-		for(auto memory : vulkanCudaShared){
-			bytes += memory->comitted;
 		}
 
 		for(auto memory : cudaVirtual){

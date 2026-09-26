@@ -136,18 +136,9 @@ struct Runtime{
 
 	inline static int totalTileFragmentCount;
 	inline static double duration_sceneNodeUpdate;
-	inline static double duration_draw;
-	inline static string hovered_node_name = "";
-	inline static string hovered_mesh_name = "";
-	inline static uint64_t numVisibleNodes = 0;
-	inline static uint64_t numVisibleTriangles = 0;
-	inline static uint64_t numNodes = 0;
-	inline static uint64_t numTriangles = 0;
 
 	inline static glm::dvec2 mousePosition = {0.0, 0.0};
 	inline static int mouseButtons = 0;
-
-	inline static int64_t numRenderedTriangles = 0;
 	
 	struct Timing{
 		string label;

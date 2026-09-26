@@ -102,52 +102,6 @@ void makeMemory(){
 			}
 
 			ImGui::Text("===============================");
-			ImGui::Text("## Vulkan-CUDA SHARED MEMORY ALLOCATIONS");
-			ImGui::Text("===============================");
-
-			if(ImGui::BeginTable("Memory", 2, flags)){
-
-				ImGui::TableSetupColumn("Label",             ImGuiTableColumnFlags_WidthStretch, 3.0f);
-				ImGui::TableSetupColumn("allocated/comitted memory",  ImGuiTableColumnFlags_WidthStretch, 1.0f);
-
-				ImGui::TableHeadersRow();
-
-				int64_t sum = 0;
-				for(VulkanCudaSharedMemory* memory : MemoryManager::vulkanCudaShared){
-					
-					ImGui::TableNextRow();
-
-					ImGui::TableNextColumn();
-					ImGui::Text(memory->label.c_str());
-
-					ImGui::TableNextColumn();
-					string strMemory = format(getSaneLocale(), "{:L}", memory->comitted);
-					alignRight(strMemory);
-					ImGui::Text(strMemory.c_str());
-
-					sum += memory->comitted;
-				}
-
-				{
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					ImGui::Text("-----------------------");
-					ImGui::TableNextColumn();
-					ImGui::Text(" ");
-
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					ImGui::Text("Total");
-					ImGui::TableNextColumn();
-					string strTotal = format(getSaneLocale(), "{:L}", sum);
-					alignRight(strTotal);
-					ImGui::Text(strTotal.c_str());
-				}
-
-				ImGui::EndTable();
-			}
-
-			ImGui::Text("===============================");
 			ImGui::Text("## Vulkan Buffers");
 			ImGui::Text("===============================");
 

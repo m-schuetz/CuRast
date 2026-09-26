@@ -157,8 +157,17 @@ struct PotreeFileNode : public SceneNode{
 			attributes.push_back(attribute);
 		}
 
-		aabb.min = min;
-		aabb.max = max;
+		// Points are rendered relative to the center of the octree's bounding box. 
+		// The position attribute's min/max is the tight bounding box of the actual points.
+		dvec3 center = (min + max) * 0.5;
+		dvec3 tightMin = min;
+		dvec3 tightMax = max;
+		if(PotreeAttribute* position = findAttribute("position"); position && position->min.size() == 3 && position->max.size() == 3){
+			tightMin = {position->min[0], position->min[1], position->min[2]};
+			tightMax = {position->max[0], position->max[1], position->max[2]};
+		}
+		aabb.min = tightMin - center;
+		aabb.max = tightMax - center;
 
 		// memory-map hierarchy.bin and octree.bin
 		mapped_hierarchy = mapFile(dir + "/hierarchy.bin", hierarchyFileSize);

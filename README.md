@@ -3,6 +3,8 @@
 
 <a href="https://diglib.eg.org/items/e0145eb3-5971-450b-b8ca-7eaf23332df7" target="_blank" rel="noopener noreferrer">[Paper]</a>
 
+> __Note__: This version of the code base renders point clouds only (LAS files and Potree 2.0 octrees, memory-mapped and rendered directly with CUDA). The triangle rasterization pipeline described in the paper, the Vulkan comparison renderer and the glTF/GLB loaders have been removed. 
+
 __About__: [Nanite](https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf) has demonstrated that small triangles can be rasterized more efficiently with custom compute shaders than with the fixed-function hardware pipeline. Building on this insight, we explore how far this advantage can be pushed for real-time rendering of massive triangle datasets without relying on precomputed LODs or acceleration structures. 
 
 __Method__: A 3-stage rasterization pipeline first rasterizes small triangles efficiently in stage 1, and falls back to other stages for increasingly larger triangles. Stage 1 assumes triangles are small and uses 1 thread to render them directly. If they are not, they are instead queued for stage 2 which uses 1 warp to render larger triangles with more compute power. If they are still too large, they are split up and queued for stage 3. 
@@ -56,74 +58,32 @@ cd build
 cmake ../
 ```
 
-Compile and run with visual Studio 2026. Drag and drop glb or gltf files to load them.
+Compile and run with visual Studio 2026. Note that the memory-mapped LAS and Potree renderers are currently Linux-only.
 
 ### Linux
 
-TODO. 
+Dependencies: 
+* CUDA 13.1 or later (expected at /usr/local/cuda)
+* A driver with HMM support (NVIDIA open kernel modules), so that CUDA kernels can read memory-mapped files directly
+* On Ubuntu/Debian: `sudo apt install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev wayland-protocols libvulkan-dev libtbb-dev`
 
-Main challenge: We're using the windows API for [memory mapping](./src/MappedFile.h) (easily read from files) and [unbuffered IO](./src/unsuck_platform_specific.cpp#L242) (efficiently read from files). mmap on linux should be straightforward, but what about fast sequential SSD reads without buffering overhead? io_uring?
+```
+mkdir build
+cd build
+cmake ../ -DCMAKE_BUILD_TYPE=Release
+make -j
+cd ..
+./build/CuRast
+```
+
+Run CuRast from the project root, since CUDA kernels are compiled at runtime from ./src/kernels.
 
 ## Getting Started
 
-You can either drag&drop glb or gltf files into the application, or modify [initScene() in main.cpp](./src/main.cpp) to load at startup and get some control over the settings. Note that glb support is limited, some/many glb files may not work. For data sets like Zorah, drag&drop won't work as Zorah is too large to fit in VRAM and requires loading with ```.compress = true```. 
-
-
-### Data Sets
-
-Some test data sets we've been using, with download link if available. 
-
-<table>
-	<tr>
-		<th>Data Set</th>
-		<th>Triangles</th>
-		<th>Description</th>
-	</tr>
-	<tr>
-		<td>
-			<a href="https://users.cg.tuwien.ac.at/~mschuetz/permanent/curast/komainu_kobe_60m.glb">Komainu Kobe</a>
-		</td>
-		<td>60M</td>
-		<td>
-			Original images courtesy of <a href="https://openheritage3d.org/project.php?id=1wv3-9775">Gildas Sidobre, NRHK, distributed by Open Heritage 3D.</a>
-		</td>
-	</tr>
-	<tr>
-		<td>
-			<a href="https://users.cg.tuwien.ac.at/~mschuetz/permanent/curast/hakone_1M.glb">Hakone Lantern</a>
-		</td>
-		<td>1M</td>
-		<td>Created with Reality Scan, simplified with Meshoptimizer.</td>
-	</tr>
-	<tr>
-		<td>
-			<a href="https://github.com/ludicon/sponza-gltf">Sponza</a>
-		</td>
-		<td>262k</td>
-		<td>
-			We use the sponza-png.glb modified by Ludicon. Original authors and modifications over the years by Marko Dabrovic, Frank Meinl, Crytek, Hans-Kristian Arntzen, Morgan McGuire.
-		</td>
-	</tr>
-	<tr>
-		<td>
-			<a href="https://github.com/nvpro-samples/vk_lod_clusters/blob/main/README.md#zorah-demo-scene">Zorah</a>
-		</td>
-		<td>18.9B</td>
-		<td>
-			We use the original zorah_main_public.gltf data set which has, since, been replaced by v2. The newer version is compressed, perhaps <a href="https://github.com/zeux/meshoptimizer">Meshoptimizer</a> can decompress it? 
-		</td>
-	</tr>
-	<tr>
-		<td>
-			Venice
-		</td>
-		<td>400M</td>
-		<td>
-			Courtesy of <a href="https://iconem.com/">Iconem</a> and the <a href="https://www.visitmuve.it/en/">Fondazione Musei Civici di Venezia</a>.
-		</td>
-	</tr>
-</table>
-
+You can either drag&drop LAS/LAZ files into the application, or modify [initScene() in main.cpp](./src/main.cpp) to load at startup:
+- `LasfileNode`: Memory-maps an uncompressed LAS file and renders its first 2 million points directly from the mapped file.
+- `PotreeFileNode`: Memory-maps a point cloud converted with [PotreeConverter 2.0](https://github.com/potree/PotreeConverter) and renders the most important octree nodes, up to a budget of 1 million points.
+- Drag&dropped LAS/LAZ files are loaded into GPU memory via laszip. 
 
 ### Program
 
@@ -131,16 +91,14 @@ Some test data sets we've been using, with download link if available.
 |------|------|
 | [src/main.cpp](src/main.cpp) | Entry point and the place to define hardcoded startup scenes. |
 | [src/CuRast.h](src/CuRast.h) |  |
-| [src/CuRastSettings.h](src/CuRastSettings.h) | Some runtime settings, but also the place where we put the USE_VULKAN_SHARED_MEMORY macro if we want to enable Vulkan.  |
-| [src/kernels/triangles_visbuffer.cu](src/kernels/triangles_visbuffer.cu) | CUDA kernels for triangle rasterization |
-| [src/kernels/resolve.cu](src/kernels/resolve.cu) | Transforms visibility buffer to color texture for display |
-| [src/CuRast_render.h](src/CuRast_render.h) | Host-side draw code that launches the kernels.  |
+| [src/CuRastSettings.h](src/CuRastSettings.h) | Some runtime settings.  |
+| [src/scene/LasfileNode.h](src/scene/LasfileNode.h), [src/scene/PotreeFileNode.h](src/scene/PotreeFileNode.h) | Scene nodes for memory-mapped LAS files and Potree 2.0 octrees |
+| [src/kernels/laspoints.cu](src/kernels/laspoints.cu), [src/kernels/potreeFileRenderer.cu](src/kernels/potreeFileRenderer.cu) | CUDA kernels that render points directly from memory-mapped files |
+| [src/kernels/resolve.cu](src/kernels/resolve.cu) | Transforms the color buffer to a texture for display, including EDL and SSAO |
+| [src/CuRast_render.h](src/CuRast_render.h) | Host-side draw code that launches the kernels, including the octree traversal for Potree files.  |
 
 #### Known Issues
 
-- Our glb loader is targeted towards loading Zorah fast and compressing it on the fly. This lead to design decisions like having 16 threads, each of which allocates as much host memory as the size of the largest index buffer. This can cause issues on systems with not enough RAM, or data sets with enormous index buffers. 
-- If compiled with Vulkan support (see CuRastSettings.h), you can only switch the rasterizer from CUDA to Vulkan, but not back. That is because we implemented converting from CUDA textures to Vulkan, but not the other way around.
-- Can only drag&drop one glb per session. Needs restart to load a new glb.
 - We don't handle "frames in flight" yet. While draw data is assembled on the CPU, the GPU may be idle and wait. In the future, while the GPU finishes drawing the current frame, the CPU should already be preparing the next frame. 
 
 ## References and Further Reads

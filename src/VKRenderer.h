@@ -162,21 +162,6 @@ struct VKRenderer {
 
 	inline static std::vector<std::function<void(std::vector<std::string>)>> fileDropListeners;
 
-	// Optional Vulkan mesh draw callback — set each frame by drawVulkan().
-	// Called inside recordCommandBuffer() with the colorAttachment in
-	// COLOR_ATTACHMENT_OPTIMAL layout inside an active dynamic render pass.
-	// Set to nullptr to use the default CUDA→blit path.
-	inline static std::function<void(VkCommandBuffer)> vulkanMeshDrawFn;
-
-	// Cleanup callback set by drawVulkan(); called by destroy() before vkDestroyDevice
-	// to release all static Vulkan resources and mesh buffers held by drawVulkan().
-	inline static std::function<void()> vulkanMeshCleanupFn;
-
-	// Depth buffer for the Vulkan mesh rasterizer pass.
-	// Managed by drawVulkan(); consumed by recordCommandBuffer() for the barrier + attachment.
-	inline static VkImage     vulkanMeshDepthImage = VK_NULL_HANDLE;
-	inline static VkImageView vulkanMeshDepthView  = VK_NULL_HANDLE;
-
 	// ---- Vulkan core objects ----
 	inline static VkInstance               instance       = VK_NULL_HANDLE;
 	inline static VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
@@ -345,57 +330,6 @@ struct VKBuffer {
 	
 };
 
-
-struct VKShader {
-	using Stage = std::tuple<const VkShaderStageFlagBits, const std::span<uint32_t const>, std::string_view>;
-
-	VKShader(const std::vector<Stage>& shaderStages,
-	         const std::vector<VkPushConstantRange>& pcRanges,
-	         const std::vector<VkDescriptorSetLayout>& setLayouts = {})
-		: shaders(shaderStages.size(), VK_NULL_HANDLE)
-		, stages(shaderStages.size())
-	{
-		VkPipelineLayoutCreateInfo layoutCI = {};
-		layoutCI.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-		layoutCI.pushConstantRangeCount = (uint32_t)pcRanges.size();
-		layoutCI.pPushConstantRanges    = pcRanges.data();
-		layoutCI.setLayoutCount         = (uint32_t)setLayouts.size();
-		layoutCI.pSetLayouts            = setLayouts.data();
-		vkCreatePipelineLayout(VKRenderer::device, &layoutCI, nullptr, &layout);
-
-		std::vector<VkShaderCreateInfoEXT> infos(shaderStages.size());
-		VkShaderCreateFlagsEXT linkFlag = shaderStages.size() > 1u ? VK_SHADER_CREATE_LINK_STAGE_BIT_EXT : 0u;
-		for (size_t i = 0; i < shaderStages.size(); ++i) {
-			auto& [stage, spirv, entry] = shaderStages[i];
-			infos[i] = {};
-			infos[i].sType                  = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT;
-			infos[i].flags                  = linkFlag;
-			infos[i].stage                  = stage;
-			infos[i].nextStage              = (i + 1 < shaderStages.size()) ? std::get<0>(shaderStages[i + 1]) : 0;
-			infos[i].codeType               = VK_SHADER_CODE_TYPE_SPIRV_EXT;
-			infos[i].codeSize               = spirv.size() * sizeof(uint32_t);
-			infos[i].pCode                  = spirv.data();
-			infos[i].pName                  = entry.data();
-			infos[i].pushConstantRangeCount = (uint32_t)pcRanges.size();
-			infos[i].pPushConstantRanges    = pcRanges.data();
-			infos[i].setLayoutCount         = (uint32_t)setLayouts.size();
-			infos[i].pSetLayouts            = setLayouts.data();
-			stages[i] = stage;
-		}
-		vkCreateShadersEXT(VKRenderer::device, (uint32_t)infos.size(), infos.data(), nullptr, shaders.data());
-	}
-
-	~VKShader() {
-		for (auto shader : shaders)
-			vkDestroyShaderEXT(VKRenderer::device, shader, nullptr);
-		if (layout != VK_NULL_HANDLE)
-			vkDestroyPipelineLayout(VKRenderer::device, layout, nullptr);
-	}
-
-	std::vector<VkShaderEXT>          shaders;
-	std::vector<VkShaderStageFlagBits> stages;
-	VkPipelineLayout                   layout = VK_NULL_HANDLE;
-};
 
 void installDragEnterHandler(GLFWwindow* window, std::function<void(std::string)> callback);
 void installDragDropHandler (GLFWwindow* window, std::function<void(std::string)> callback);

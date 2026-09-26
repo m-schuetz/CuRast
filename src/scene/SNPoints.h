@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "SceneNode.h"
+#include "Pointcloud.h"
 #include "./kernels/HostDeviceInterface.h"
 
 using std::string;

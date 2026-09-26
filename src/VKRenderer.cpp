@@ -419,12 +419,6 @@ void VKRenderer::init() {
 void VKRenderer::destroy() {
 	vkDeviceWaitIdle(device);
 
-	// Release all Vulkan resources held by drawVulkan() before destroying the device
-	if (vulkanMeshCleanupFn) {
-		vulkanMeshCleanupFn();
-		vulkanMeshCleanupFn = nullptr;
-	}
-
 	if (imguiDescriptorPool != VK_NULL_HANDLE) {
 		vkDestroyDescriptorPool(device, imguiDescriptorPool, nullptr);
 		imguiDescriptorPool = VK_NULL_HANDLE;
@@ -595,8 +589,6 @@ void VKRenderer::createLogicalDevice() {
 
 	std::vector<const char*> deviceExtensions = {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-		VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME,
-		VK_EXT_SHADER_OBJECT_EXTENSION_NAME,
 		VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME,
 #ifdef _WIN32
 		VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
@@ -631,14 +623,9 @@ void VKRenderer::createLogicalDevice() {
 	vulkan14Features.sType          = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
 	vulkan14Features.hostImageCopy  = VK_TRUE;
 
-	VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeature = {};
-	shaderObjectFeature.sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT;
-	shaderObjectFeature.shaderObject = VK_TRUE;
-
 	vulkan11Features.pNext    = &vulkan12Features;
 	vulkan12Features.pNext    = &vulkan13Features;
 	vulkan13Features.pNext    = &vulkan14Features;
-	vulkan14Features.pNext    = &shaderObjectFeature;
 
 	VkPhysicalDeviceFeatures2 features2 = {};
 	features2.sType                         = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -901,96 +888,7 @@ void VKRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
 
 	// All barriers use VkImageMemoryBarrier2 (Vulkan 1.3 core synchronization2).
 
-	if (vulkanMeshDrawFn) {
-		// --- Vulkan mesh rasterizer path ---
-		VkImageSubresourceRange depthSubRes = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
-
-		Timer::resetVulkanFrame(cmd, currentFrame);
-
-		// 1a. Depth: UNDEFINED → GENERAL
-		{
-			VkImageMemoryBarrier2 b = {};
-			b.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-			b.srcStageMask  = VK_PIPELINE_STAGE_2_NONE;
-			b.srcAccessMask = VK_ACCESS_2_NONE;
-			b.dstStageMask  = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
-			                | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-			b.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-			                | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-			b.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-			b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-			b.image         = vulkanMeshDepthImage;
-			b.subresourceRange = depthSubRes;
-
-			VkDependencyInfo dep = {};
-			dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-			dep.imageMemoryBarrierCount = 1;
-			dep.pImageMemoryBarriers    = &b;
-			vkCmdPipelineBarrier2(cmd, &dep);
-		}
-
-		// 1b. Dynamic rendering + mesh draw
-		{
-			VkClearValue clearColor = {};
-			clearColor.color = { 
-				CuRastSettings::background.x,
-				CuRastSettings::background.y,
-				CuRastSettings::background.z,
-				1.f
-			};
-			
-
-			VkClearValue clearDepth = {};
-			clearDepth.depthStencil = { 0.0f, 0 };
-
-			VkRenderingAttachmentInfo ca = {};
-			ca.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-			ca.imageView   = colorTex->view;
-			ca.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-			ca.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
-			ca.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
-			ca.clearValue  = clearColor;
-
-			VkRenderingAttachmentInfo da = {};
-			da.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-			da.imageView   = vulkanMeshDepthView;
-			da.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-			da.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
-			da.storeOp     = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			da.clearValue  = clearDepth;
-
-			VkRenderingInfo ri = {};
-			ri.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
-			ri.renderArea           = { {0, 0}, {(uint32_t)colorTex->width, (uint32_t)colorTex->height} };
-			ri.layerCount           = 1;
-			ri.colorAttachmentCount = 1;
-			ri.pColorAttachments    = &ca;
-			ri.pDepthAttachment     = &da;
-			vkCmdBeginRendering(cmd, &ri);
-			vulkanMeshDrawFn(cmd);
-			vkCmdEndRendering(cmd);
-		}
-
-		// 1c. Color attachment write → transfer read (stays GENERAL)
-		{
-			VkImageMemoryBarrier2 b = {};
-			b.sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-			b.srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-			b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-			b.dstStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-			b.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-			b.oldLayout     = VK_IMAGE_LAYOUT_GENERAL;
-			b.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-			b.image         = colorTex->image;
-			b.subresourceRange = colorSubRes;
-
-			VkDependencyInfo dep = {};
-			dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-			dep.imageMemoryBarrierCount = 1;
-			dep.pImageMemoryBarriers    = &b;
-			vkCmdPipelineBarrier2(cmd, &dep);
-		}
-	} // else CUDA path: colorTex stays GENERAL; CUDA writes synced via cuStreamSynchronize in unmapCudaVk()
+	// colorTex stays GENERAL; CUDA writes synced via cuStreamSynchronize in unmapCudaVk()
 
 	// 2. Swapchain: UNDEFINED → GENERAL
 	{

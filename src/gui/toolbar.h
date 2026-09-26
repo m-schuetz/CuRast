@@ -128,13 +128,6 @@ void CuRast::makeToolbar(){
 				}
 				endHighlightButtonIf();
 
-				ImGui::SameLine();
-				startHighlightButtonIf(CuRastSettings::showBenchmarking);
-				if(ImGui::Button("Benchmarking")){
-					CuRastSettings::showBenchmarking = !CuRastSettings::showBenchmarking;
-				}
-				endHighlightButtonIf();
-
 				endSection();
 			}
 			
@@ -147,19 +140,6 @@ void CuRast::makeToolbar(){
 				ImGui::Checkbox("bounding boxes", &CuRastSettings::showBoundingBoxes);
 				ImGui::SameLine();
 				ImGui::Checkbox("frustum culling", &CuRastSettings::enableFrustumCulling);
-				ImGui::SameLine();
-				ImGui::Checkbox("freeze frustum", &CuRastSettings::freezeFrustum);
-
-				// ImGui::SameLine();
-				ImGui::SetNextItemWidth(200.0f);
-				ImGui::SliderFloat("threshold", &CuRastSettings::threshold, 0.0f, 1.0f);
-				
-				ImGui::SameLine();
-				ImGui::Checkbox("Disable Instancing", &CuRastSettings::disableInstancing);
-
-				ImGui::Checkbox("Enable Picking", &CuRastSettings::enableObjectPicking);
-				ImGui::SameLine();
-				ImGui::Checkbox("Enable Translucency", &CuRastSettings::enableTranslucency);
 				ImGui::SameLine();
 				ImGui::Checkbox("Inset", &CuRastSettings::showInset);
 				
@@ -206,48 +186,6 @@ void CuRast::makeToolbar(){
 					CuRastSettings::requestScreenshot = make_shared<string>("");
 				}
 				
-				ImGui::Text("Rasterizer CUDA: ");
-				static int mode = CuRastSettings::rasterizer;
-
-				ImGui::SameLine();
-				ImGui::RadioButton("Visbuffer[indexed]##rasterizer", &mode, RASTERIZER_VISBUFFER_INDEXED); 
-				ImGui::SameLine();
-				ImGui::RadioButton("Visbuffer[instanced]##rasterizer", &mode, RASTERIZER_VISBUFFER_INSTANCED); 
-
-				#ifdef USE_VULKAN_SHARED_MEMORY
-					ImGui::Text("Rasterizer Vulkan: ");
-
-					ImGui::SameLine();
-					ImGui::RadioButton("Indexed Draw##rasterizer", &mode, RASTERIZER_VULKAN_INDEXED_DRAW); 
-					// if(ImGui::IsItemHovered())ImGui::SetTooltip("Vulkan Forward Indexed Draw");
-
-					ImGui::SameLine();
-					ImGui::RadioButton("Index-Pulling##rasterizer", &mode, RASTERIZER_VULKAN_INDEXPULLING_INSTANCED); 
-					// if(ImGui::IsItemHovered())ImGui::SetTooltip("Vulkan VisibilityBuffer IndexPulling");
-
-					ImGui::SameLine();
-					ImGui::RadioButton("Visbuffer##rasterizer", &mode, RASTERIZER_VULKAN_INDEXPULLING_VISBUFFER); 
-					// if(ImGui::IsItemHovered())ImGui::SetTooltip("Vulkan VisibilityBuffer IndexPulling");
-				#else 
-					ImGui::BeginDisabled(true);
-					ImGui::Text("Rasterizer Vulkan: Disabled. Compile with USE_VULKAN_SHARED_MEMORY");
-					ImGui::EndDisabled();
-					// if(ImGui::IsItemHovered())ImGui::SetTooltip("Requires enabling USE_VULKAN_SHARED_MEMORY in CuRastSettings.h");
-
-					// ImGui::BeginDisabled(true);
-
-					// ImGui::SameLine();
-					// ImGui::RadioButton("FORWARD##rasterizer", &mode, RASTERIZER_VULKAN_INDEXED_DRAW);
-
-					// ImGui::SameLine();
-					// ImGui::RadioButton("VISBUFFER##rasterizer", &mode, RASTERIZER_VULKAN_INDEXPULLING_VISBUFFER); 
-
-					// ImGui::EndDisabled();
-				#endif
-
-
-				CuRastSettings::rasterizer = mode;
-
 				// ImGui::SameLine();
 				endSection();
 			}
@@ -257,31 +195,9 @@ void CuRast::makeToolbar(){
 
 				startSection("Appearance");
 
-				ImGui::Text("Attribute: ");
-				ImGui::SameLine();
-				ImGui::RadioButton("None##displayAttribute", (int*)&CuRastSettings::displayAttribute, (int)DisplayAttribute::NONE); 
-				ImGui::SameLine();
-				ImGui::RadioButton("Texture##displayAttribute", (int*)&CuRastSettings::displayAttribute, (int)DisplayAttribute::TEXTURE); 
-				ImGui::SameLine();
-				ImGui::RadioButton("VertexColor##displayAttribute", (int*)&CuRastSettings::displayAttribute, (int)DisplayAttribute::VERTEX_COLORS); 
-				ImGui::SameLine();
-				ImGui::RadioButton("UV##displayAttribute", (int*)&CuRastSettings::displayAttribute, (int)DisplayAttribute::UV); 
-				ImGui::SameLine();
-				ImGui::RadioButton("Normal##displayAttribute", (int*)&CuRastSettings::displayAttribute, (int)DisplayAttribute::NORMAL); 
-				ImGui::SameLine();
-				ImGui::RadioButton("triangleID##displayAttribute", (int*)&CuRastSettings::displayAttribute, (int)DisplayAttribute::TRIANGLE_ID); 
-				ImGui::SameLine();
-				ImGui::RadioButton("meshID##displayAttribute", (int*)&CuRastSettings::displayAttribute, (int)DisplayAttribute::MESH_ID); 
-				ImGui::SameLine();
-				ImGui::RadioButton("Stage##displayAttribute", (int*)&CuRastSettings::displayAttribute, (int)DisplayAttribute::STAGE); 
-
 				ImGui::Checkbox("EDL", &CuRastSettings::enableEDL);
 				ImGui::SameLine();
 				ImGui::Checkbox("SSAO", &CuRastSettings::enableSSAO);
-				ImGui::SameLine();
-				ImGui::Checkbox("Diffuse", &CuRastSettings::enableDiffuseLighting);
-				ImGui::SameLine();
-				ImGui::Checkbox("Wireframe", &CuRastSettings::showWireframe);
 				
 				ImGui::SameLine();
 				ImGui::Text("Background:");

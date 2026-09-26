@@ -14,8 +14,6 @@
 #include "cuda.h"
 #include "cuda_runtime.h"
 #include "CudaModularProgram.h"
-#include "CudaVulkanSharedMemory.h"
-#include "VulkanCudaSharedMemory.h"
 
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -28,9 +26,7 @@
 #include "json/json.hpp"
 #include "CuRast.h"
 #include "MappedFile.h"
-#include "GLTFLoader.h"
-#include "LargeGlbLoader.h"
-#include "PlyLoader.h"
+#include "ThreadPool.h"
 #include "types.h"
 #include "scene/LasfileNode.h"
 #include "scene/PotreeFileNode.h"
@@ -41,12 +37,6 @@
 using namespace std; // YOLO
 
 CUcontext context;
-
-dmat4 flip = dmat4(
-	1.000,  0.000, 0.000, 0.000,
-	0.000,  0.000, 1.000, 0.000,
-	0.000, -1.000, 0.000, 0.000,
-	0.000,  0.000, 0.000, 1.000);
 
 void initCuda() {
 	cuInit(0);
@@ -287,93 +277,7 @@ void initScene() {
 	
 }
 
-void update(){
-
-	if(Benchmarking::request_scenario){
-
-		auto scenario = Benchmarking::request_scenario;
-
-		string path = stringReplace(scenario->path, "DATASETPATH", Benchmarking::datasetPath);
-
-		CuRastSettings::displayAttribute = scenario->attribute;
-
-		static auto glb = largeGlb::load(path, context, {
-			.skipUVs = scenario->skipUVs,
-			.skipNormals = scenario->skipNormals,
-			.compress = scenario->compress,
-			.imageDivisionFactor = scenario->imageDivisionFactor,
-		});
-		glb->glbNode->name = scenario->label;
-		glb->glbNode->transform = scenario->transform * glb->glbNode->transform;
-
-		vector<shared_ptr<SceneNode>> filtered;
-		for(shared_ptr<SceneNode> node : glb->glbNode->children){
-
-			bool accept = scenario->filter(node);
-			
-			if(accept){
-				filtered.push_back(node);
-			}
-		}
-		glb->glbNode->children = filtered;
-
-		shared_ptr<SceneNode> original = glb->glbNode;
-
-		function<shared_ptr<SceneNode>(shared_ptr<SceneNode>)> deepClone =
-		[&deepClone](shared_ptr<SceneNode> node) -> shared_ptr<SceneNode> {
-
-			shared_ptr<SceneNode> clone;
-
-			shared_ptr<SNTriangles> tris = dynamic_pointer_cast<SNTriangles>(node);
-			if(tris){
-				auto triClone      = make_shared<SNTriangles>(tris->name);
-				triClone->mesh     = tris->mesh;
-				triClone->texture  = tris->texture;
-				triClone->aabb     = tris->aabb;
-				clone = triClone;
-			}else{
-				clone = make_shared<SceneNode>(node->name);
-				clone->aabb = node->aabb;
-			}
-
-			clone->transform = node->transform;
-			clone->visible   = node->visible;
-
-			for(auto& child : node->children){
-				clone->children.push_back(deepClone(child));
-			}
-
-			return clone;
-		};
-
-		for(int ix = 0; ix < scenario->instances_count.x; ix++)
-		for(int iy = 0; iy < scenario->instances_count.y; iy++)
-		{
-			shared_ptr<SceneNode> clone = deepClone(original);
-			clone->transform = glm::translate(dvec3{ix * scenario->instances_spacing.x, iy * scenario->instances_spacing.y, 0.0f}) * clone->transform;
-			CuRast::instance->scene.world->children.push_back(clone);
-		}
-
-		Runtime::controls->yaw    = scenario->view_overview.yaw;
-		Runtime::controls->pitch  = scenario->view_overview.pitch;
-		Runtime::controls->radius = scenario->view_overview.radius;
-		Runtime::controls->target = scenario->view_overview.target;
-
-		Benchmarking::active_scenario = Benchmarking::request_scenario;
-		Benchmarking::request_scenario = nullptr;
-	}
-
-}
-
 int main(int argc, char** argv){
-
-	Benchmarking::datasetPath = "./";
-
-	for(int i = 1; i < argc - 1; i++){
-		if(string(argv[i]) == "-b"){
-			Benchmarking::datasetPath = argv[i + 1];
-		}
-	}
 
 	std::locale::global(getSaneLocale());
 
@@ -386,27 +290,6 @@ int main(int argc, char** argv){
 		CuRast* editor = CuRast::instance;
 		Scene& scene = editor->scene;
 
-		if(files.size() == 1 && iEndsWith(files[0], ".gltf") || iEndsWith(files[0], ".glb")){
-			string file = files[0];
-			static vector<shared_ptr<largeGlb::LoadedGlb>> loadedGlbs;
-			Scene& scene = editor->scene;
-
-			auto glb = largeGlb::load(file, context, {.skipUVs = false, .compress = false});
-			scene.world->children.push_back(glb->glbNode);
-			loadedGlbs.push_back(glb);
-
-			scene.updateTransformations();
-
-			Box3 aabb = glb->glbNode->aabb;
-			vec3 extent = aabb.max - aabb.min;
-			vec3 center = (aabb.min + aabb.max) * 0.5f;
-
-			Runtime::controls->yaw    = -7.204;
-			Runtime::controls->pitch  = -0.579;
-			Runtime::controls->radius = length(extent);
-			Runtime::controls->target = { center.x, center.y, center.z};
-		}
-		
 		vector<string> lazfiles;
 		for(string file : files){
 			if(iEndsWith(file, ".laz") || iEndsWith(file, ".las")){
@@ -433,18 +316,7 @@ int main(int argc, char** argv){
 	initScene();
 
 	VKRenderer::loop(
-		[&]() {
-			update();
-			CuRast::instance->update();
-			
-			DeviceState* state = CuRast::instance->deviceState;
-			double stage1_millies = double(state->nanotime_stage_1 - state->nanotime_start) / 1'000'000.0;
-			double stage2_millies = double(state->nanotime_stage_2 - state->nanotime_stage_1) / 1'000'000.0;
-			double stage3_millies = double(state->nanotime_stage_3 - state->nanotime_stage_2) / 1'000'000.0;
-			Runtime::debugValues["stage 1"] = format("{:.3f}", stage1_millies);
-			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
-			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
-		},
+		[&]() {CuRast::instance->update();},
 		[&]() {CuRast::instance->render();},
 		[&]() {CuRast::instance->postFrame();}
 	);

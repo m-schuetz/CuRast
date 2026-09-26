@@ -20,9 +20,7 @@ include(cmake/common.cmake)
 file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS 
 	src/*.[ch]pp
 	src/*.cu
-	src/kernels/textureTools.cu
 	src/kernels/lines.cu
-	#src/kernels/rasterization_utils.cu
 )
 
 # Choose GPU architectures (adjust for your machine). 
@@ -87,26 +85,3 @@ set_target_properties(${TARGET_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 # set proper startup project
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${TARGET_NAME})
-
-
-
-
-
-
-
-# Second project
-add_executable(PlyToGlb 
-	src/tools/PlyToGlb.cpp
-	src/unsuck_platform_specific.cpp
-)
-target_include_directories(PlyToGlb PRIVATE libs/glm)
-target_include_directories(PlyToGlb PRIVATE
-	./src
-	./libs
-)
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-	target_link_libraries(PlyToGlb PRIVATE stdc++exp)
-endif()
-if (TBB_FOUND)
-	target_link_libraries(PlyToGlb PRIVATE TBB::tbb)
-endif()

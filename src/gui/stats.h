@@ -28,16 +28,6 @@ void CuRast::makeStats(){
 					ImGui::TextUnformatted(str.c_str());
 				}
 
-				{ // RENDERED TRIANGLES
-					ImGui::TableNextRow();
-					ImGui::TableSetColumnIndex(0);
-					ImGui::TextUnformatted("rendered triangles");
-
-					ImGui::TableSetColumnIndex(1);
-					string str = format(getSaneLocale(),"{:L}", Runtime::numRenderedTriangles);
-					ImGui::TextUnformatted(str.c_str());
-				}
-
 				{ // Key
 					ImGui::TableNextRow();
 					ImGui::TableSetColumnIndex(0);
@@ -64,28 +54,6 @@ void CuRast::makeStats(){
 						Runtime::mouseEvents.pos_x,
 						Runtime::mouseEvents.pos_y
 					);
-
-					ImGui::TableSetColumnIndex(1);
-					ImGui::TextUnformatted(str.c_str());
-				}
-
-				{ // Hovered Mesh Index
-					ImGui::TableNextRow();
-					ImGui::TableSetColumnIndex(0);
-					ImGui::TextUnformatted("Hovered Mesh Id");
-
-					string str = format("{:5}", editor->deviceState->hovered_meshId);
-
-					ImGui::TableSetColumnIndex(1);
-					ImGui::TextUnformatted(str.c_str());
-				}
-
-				{ // Hovered Triangle Index
-					ImGui::TableNextRow();
-					ImGui::TableSetColumnIndex(0);
-					ImGui::TextUnformatted("Hovered Triangle Index");
-
-					string str = format("{:5}", editor->deviceState->hovered_triangleIndex);
 
 					ImGui::TableSetColumnIndex(1);
 					ImGui::TextUnformatted(str.c_str());

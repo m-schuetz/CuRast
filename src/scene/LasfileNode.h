@@ -121,8 +121,9 @@ struct LasfileNode : public SceneNode{
 			default: offset_rgb = -1; break;
 		}
 
-		aabb.min = min;
-		aabb.max = max;
+		// points are rendered without the offset
+		aabb.min = min - offset;
+		aabb.max = max - offset;
 
 		if(compressed){
 			println("WARNING: {} is LAZ-compressed, point data can not be accessed from the mapped file.", file);
