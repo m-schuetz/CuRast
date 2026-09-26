@@ -47,7 +47,7 @@ void unmapCudaVk(MappedTextures& mappings){
 	cuStreamSynchronize((CUstream)CU_STREAM_DEFAULT);
 }
 
-void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebuffer, CudaModularProgram* prog_resolve){
+void saveScreenshot(RenderTarget target, View view, CudaModularProgram* prog_resolve){
 
 	u64 numPixels = target.width * target.height;
 	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
@@ -61,9 +61,7 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 
 	void* args[] = {
 		&cptr_screenshot,
-		&cptr_ssaoShadebuffer,
 		&CuRastSettings::enableEDL,
-		&CuRastSettings::enableSSAO,
 		&view.framebuffer->width,
 		&view.framebuffer->height,
 		&backgroundColor
@@ -483,21 +481,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	int mouse_X = Runtime::mousePosition.x;
 	int mouse_Y = target.height - Runtime::mousePosition.y;
 
-	// SCREEN SPACE AMBIENT OCCLUSION
-	static CudaVirtualMemory* cvm_ssaoShadebuffer = MemoryManager::allocVirtualCuda(2'000'000'000, "cvm_ssaoShadebuffer");
-	if(CuRastSettings::enableSSAO){
-		// the framebuffer is not otherwise used, so it stores the occlusion values.
-		// But for the final ssao shading values, we need an extra buffer
-		cvm_ssaoShadebuffer->commit(cvm_framebuffer->comitted / 2);
-
-		void* argsSSAO[] = {
-			&cvm_framebuffer->cptr,
-			&cvm_ssaoShadebuffer->cptr
-		};
-		prog->launch2D("kernel_ssaoOcclusion", argsSSAO, target.width, target.height);
-		prog->launch2D("kernel_ssaoBlur", argsSSAO, target.width, target.height);
-	}
-
 	{ // RESOLVE COLOR BUFFER (write to graphics API framebuffer)
 		int viewWidth = view.framebuffer->width;
 		int viewHeight = view.framebuffer->height;
@@ -510,14 +493,12 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 		void* args[] = {
 			&mappings.surfaces[0],
-			&cvm_ssaoShadebuffer->cptr,
 			&viewWidth,
 			&viewHeight,
 			&mouse_X,
 			&mouse_Y,
 			&cptr_state,
 			&CuRastSettings::enableEDL,
-			&CuRastSettings::enableSSAO,
 			&CuRastSettings::showInset,
 			&backgroundColor
 		};
@@ -525,7 +506,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	}
 
 	if(CuRastSettings::requestScreenshot){
-		saveScreenshot(target, view, cvm_ssaoShadebuffer->cptr, prog);
+		saveScreenshot(target, view, prog);
 	}
 
 	unmapCudaVk(mappings);

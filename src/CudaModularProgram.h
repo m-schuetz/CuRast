@@ -373,7 +373,8 @@ struct CudaModularProgram{
 			// "lcudadevrt"
 			// "-verbose",
 			"-O3",           // optimization level
-			"-optimize-unused-variables",
+			// Don't use "-optimize-unused-variables": It assumes the host does not reference device variables,
+			// which lets LTO internalize globals like c_target so that getGlobalsPointer() can't find them.
 			"-split-compile=0",
 		};
 

@@ -196,8 +196,6 @@ void CuRast::makeToolbar(){
 				startSection("Appearance");
 
 				ImGui::Checkbox("EDL", &CuRastSettings::enableEDL);
-				ImGui::SameLine();
-				ImGui::Checkbox("SSAO", &CuRastSettings::enableSSAO);
 				
 				ImGui::SameLine();
 				ImGui::Text("Background:");

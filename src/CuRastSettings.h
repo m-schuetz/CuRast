@@ -16,7 +16,6 @@ struct CuRastSettings{
 	static inline bool showInset = false;
 	static inline int supersamplingFactor = 1;
 
-	static inline bool enableSSAO = false;
 	static inline shared_ptr<string> requestScreenshot = nullptr; // Set to path of screenshot, or empty string for auto path
 	static inline vec4 background = {1.0f, 1.0f, 1.0f, 1.0f};
 };
