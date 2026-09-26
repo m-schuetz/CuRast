@@ -75,19 +75,6 @@ void VKTexture::destroy() {
 void VKTexture::importToCuda() {
 	destroyCuda();
 
-#ifdef _WIN32
-	VkMemoryGetWin32HandleInfoKHR handleInfo = {};
-	handleInfo.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR;
-	handleInfo.memory     = memory;
-	handleInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
-	HANDLE win32Handle;
-	vkGetMemoryWin32HandleKHR(VKRenderer::device, &handleInfo, &win32Handle);
-
-	CUDA_EXTERNAL_MEMORY_HANDLE_DESC extDesc{};
-	extDesc.type                 = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32;
-	extDesc.handle.win32.handle  = win32Handle;
-	extDesc.handle.win32.name    = nullptr;
-#else
 	VkMemoryGetFdInfoKHR handleInfo = {};
 	handleInfo.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
 	handleInfo.memory     = memory;
@@ -98,7 +85,6 @@ void VKTexture::importToCuda() {
 	CUDA_EXTERNAL_MEMORY_HANDLE_DESC extDesc{};
 	extDesc.type       = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
 	extDesc.handle.fd  = fd;
-#endif
 
 	VkMemoryRequirements memReqs;
 	vkGetImageMemoryRequirements(VKRenderer::device, image, &memReqs);
@@ -106,9 +92,6 @@ void VKTexture::importToCuda() {
 
 	cuImportExternalMemory(&cudaExtMem, &extDesc);
 
-#ifdef _WIN32
-	CloseHandle(win32Handle); // CUDA holds its own reference
-#endif
 
 	CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC arrDesc{};
 	arrDesc.offset                = 0;
@@ -140,15 +123,9 @@ void VKTexture::setSize(int w, int h) {
 	this->height = h;
 
 	// Create exportable image
-#ifdef _WIN32
-	VkExternalMemoryImageCreateInfo extImgInfo = {};
-	extImgInfo.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-	extImgInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
-#else
 	VkExternalMemoryImageCreateInfo extImgInfo = {};
 	extImgInfo.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
 	extImgInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-#endif
 
 	VkImageCreateInfo ci = {};
 	ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -174,15 +151,9 @@ void VKTexture::setSize(int w, int h) {
 	vkCreateImage(VKRenderer::device, &ci, nullptr, &image);
 
 	// Allocate exportable memory
-#ifdef _WIN32
-	VkExportMemoryAllocateInfo exportInfo = {};
-	exportInfo.sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
-	exportInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
-#else
 	VkExportMemoryAllocateInfo exportInfo = {};
 	exportInfo.sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
 	exportInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-#endif
 
 	VkMemoryRequirements memReqs;
 	vkGetImageMemoryRequirements(VKRenderer::device, image, &memReqs);
@@ -579,13 +550,8 @@ void VKRenderer::createLogicalDevice() {
 	std::vector<const char*> deviceExtensions = {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME,
-#ifdef _WIN32
-		VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
-		VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
-#else
 		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
 		VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
-#endif
 		VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
 		VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
 	};

@@ -42,27 +42,7 @@ __Future Work__: To make it suitable for games, we intend to (1) optimize handli
 
 ## Installing
 
-
-### Windows
-
-Dependencies: 
-* CUDA 13.1
-* Visual Studio 2026
-* An RTX 4090
-
-Create Visual Studio solution files in a build folder via cmake:
-
-```
-mkdir build
-cd build
-cmake ../
-```
-
-Compile and run with visual Studio 2026. Note that the memory-mapped LAS and Potree renderers are currently Linux-only.
-
-### Linux
-
-Dependencies: 
+CuRast runs on Linux. Dependencies: 
 * CUDA 13.1 or later (expected at /usr/local/cuda)
 * A driver with HMM support (NVIDIA open kernel modules), so that CUDA kernels can read memory-mapped files directly
 * On Ubuntu/Debian: `sudo apt install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libwayland-dev libxkbcommon-dev wayland-protocols libvulkan-dev libtbb-dev`

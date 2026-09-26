@@ -96,14 +96,14 @@ struct CudaModule{
 		string dir = fs::path(path).parent_path().string();
 
 		// Toolkit root, i.e., the directory containing include/cuda.h. 
-		// Windows: <root>/lib/x64/cudadevrt.lib, Linux: <root>/lib/libcudadevrt.a with root = /usr/local/cuda/targets/x86_64-linux
+		// e.g. <root>/lib64/libcudadevrt.a, with root = /usr/local/cuda
 		auto findCudaPath = []() -> string {
 			fs::path dir = fs::path(CUDA_DEVRTLIB).parent_path();
 			while(dir.has_parent_path() && dir != dir.parent_path()){
 				if(fs::exists(dir / "include" / "cuda.h")) return dir.string();
 				dir = dir.parent_path();
 			}
-			return fs::path(CUDA_DEVRTLIB).parent_path().parent_path().parent_path().string();
+			return string("/usr/local/cuda");
 		};
 
 		const char* cuda_path_env = std::getenv("CUDA_PATH");

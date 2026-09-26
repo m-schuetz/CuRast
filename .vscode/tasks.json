@@ -6,9 +6,9 @@
 		{
 			"label": "Run App",
 			"type": "shell",
-			"command": "./Skye.exe",
+			"command": "./build/CuRast",
 			"options": {
-				"cwd": "./bin/Release_x64"
+				"cwd": "${workspaceFolder}"
 			},
 			"group": {
 				"kind": "build",

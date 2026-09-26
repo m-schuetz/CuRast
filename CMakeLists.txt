@@ -18,20 +18,10 @@ file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS
 )
 
 add_executable(${TARGET_NAME} ${PROJECT_SOURCES})
-if (MSVC)
-	target_compile_options(${TARGET_NAME} PRIVATE
-		$<$<COMPILE_LANGUAGE:CXX>:/Zc:preprocessor>
-	)
-endif()
 target_compile_definitions(${TARGET_NAME} PUBLIC
 	IMGUI_DEFINE_MATH_OPERATORS
-	_HAS_STD_BYTE=0
 	GLFW_INCLUDE_NONE
 )
-if (WIN32)
-	target_compile_definitions(${TARGET_NAME} PUBLIC VK_USE_PLATFORM_WIN32_KHR)
-	set_property(TARGET ${TARGET_NAME} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$(SolutionDir)..")
-endif()
 
 # Include paths
 target_include_directories(${TARGET_NAME} PRIVATE
@@ -45,11 +35,9 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 endif()
 
 # libstdc++ implements std::execution::par via TBB if its headers are found
-if (NOT WIN32)
-	find_package(TBB QUIET)
-	if (TBB_FOUND)
-		target_link_libraries(${TARGET_NAME} PRIVATE TBB::tbb)
-	endif()
+find_package(TBB QUIET)
+if (TBB_FOUND)
+	target_link_libraries(${TARGET_NAME} PRIVATE TBB::tbb)
 endif()
 
 # Add other third-party libs
@@ -57,6 +45,3 @@ ADD_CUDA(${TARGET_NAME})
 ADD_VULKAN(${TARGET_NAME})
 ADD_GLM(${TARGET_NAME})
 ADD_IMGUI(${TARGET_NAME})
-
-# set proper startup project
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${TARGET_NAME})
