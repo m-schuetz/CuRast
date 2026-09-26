@@ -97,7 +97,6 @@ struct DeviceState{
 };
 
 struct RenderTarget{
-	uint64_t* framebuffer;
 	uint64_t* colorbuffer;
 	int width;
 	int height;

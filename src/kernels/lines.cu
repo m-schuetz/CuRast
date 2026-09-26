@@ -157,7 +157,7 @@ void drawLine(vec3 start, vec3 end, uint32_t color = 0xff0000ff){
 		if(depth > 0.0f){
 			uint64_t udepth = __float_as_uint(depth);
 			uint64_t pixel = (udepth << 32) | color;
-			atomicMin(&c_target.framebuffer[pixelID], pixel);
+			atomicMin(&c_target.colorbuffer[pixelID], pixel);
 		}
 
 		block.sync();

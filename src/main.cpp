@@ -44,6 +44,11 @@ void initCuda() {
 	CUctxCreateParams creation_params = {};
 	cuDeviceGet(&CURuntime::device, 0);
 	cuCtxCreate(&context, &creation_params, 0, CURuntime::device);
+
+	// None of our kernels use stack/local memory, but the default limit of 1kb per thread reserves 
+	// stack for all threads that can be resident on the GPU (~192MB on an RTX 4090). 
+	// The driver automatically increases the limit if a kernel requires more.
+	cuCtxSetLimit(CU_LIMIT_STACK_SIZE, 0);
 }
 
 void loadPointcloud(string file){

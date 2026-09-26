@@ -9,7 +9,6 @@
 
 using namespace std;
 
-CudaVirtualMemory* cvm_framebuffer = nullptr;
 CudaVirtualMemory* cvm_colorbuffer = nullptr;
 bool initialized = false;
 
@@ -391,7 +390,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	int supersamplingFactor = CuRastSettings::supersamplingFactor;
 
 	RenderTarget target;
-	target.framebuffer = (u64*)cvm_framebuffer->cptr;
 	target.colorbuffer = (u64*)cvm_colorbuffer->cptr;
 	target.width = supersamplingFactor * view.framebuffer->width;
 	target.height = supersamplingFactor * view.framebuffer->height;
@@ -417,20 +415,12 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	static CUdeviceptr dummydata = MemoryManager::alloc(16, "dummydata");
 	prog->launch("kernel_dummy", {&dummydata}, 1);
 
-	{ // resize and clear cuda framebuffer
+	{ // resize and clear cuda colorbuffer
 		u32 clearColor = 0xff000000;
 		float clearDepth = Infinity;
 
 		u64 requiredBytes = numPixels * 8;
-		cvm_framebuffer->commit(requiredBytes);
 		cvm_colorbuffer->commit(requiredBytes);
-
-		prog->launch("kernel_clearFramebuffer", {
-			&cvm_framebuffer->cptr,
-			&numPixels,
-			&clearColor,
-			&clearDepth
-		}, numPixels);
 
 		prog->launch("kernel_clearFramebuffer", {
 			&cvm_colorbuffer->cptr,
@@ -446,9 +436,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 	// DRAW BOUNDING BOXES
 	if(CuRastSettings::showBoundingBoxes){
-		RenderTarget target_lines = target;
-		target_lines.framebuffer = (u64*)cvm_colorbuffer->cptr;
-
 		vector<BoundingBox> boxes;
 		scene->root->traverse([&](SceneNode* node){
 			if(node->aabb.isDefault()) return;
@@ -470,7 +457,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 			u32 numBoxes = boxes.size();
 			launch_drawBoundingBoxes(
-				target_lines,
+				target,
 				(BoundingBox*)cvm_boxes->cptr,
 				numBoxes,
 				(u32*)cptr_numProcessedBatches
@@ -526,9 +513,6 @@ void initialize(){
 	int defaultPixels = 1920 * 1080;
 	int64_t virtualCapacity = 2'147'483'648; // sufficient for up to 4096 x 4096 pixels with 16x supersampling
 	// int max_SuperSamples = 16;
-	cvm_framebuffer = MemoryManager::allocVirtualCuda(virtualCapacity, "framebuffer");
-	cvm_framebuffer->commit(8 * defaultPixels);
-
 	cvm_colorbuffer = MemoryManager::allocVirtualCuda(virtualCapacity, "colorbuffer");
 	cvm_colorbuffer->commit(8 * defaultPixels);
 
