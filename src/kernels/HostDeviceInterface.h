@@ -34,8 +34,6 @@
  using glm::ivec4;
  using glm::mat4;
 
-// constexpr uint32_t BACKGROUND_COLOR = 0xff887766;
-constexpr uint32_t BACKGROUND_COLOR = 0xffffffff;
 
 // Rendering las files directly from the memory-mapped file is limited to the first N points
 constexpr uint64_t MAX_LAS_POINTS = 2'000'000;

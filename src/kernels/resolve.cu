@@ -72,11 +72,9 @@ void kernel_clearFramebuffer(
 	int pixelID = grid.thread_rank();
 	if (pixelID >= numPixels) return;
 
-	// uint64_t udepth = __float_as_uint(clearDepth);
-	// uint64_t udepth = 0x00ffffff;
-	// uint64_t pixel = udepth << 40;
-	uint64_t pixel = 0xFFFFFFF0'00000000ULL;
-	framebuffer[pixelID] = pixel;
+	// Resolve treats infinite depth as background
+	uint64_t udepth = __float_as_uint(clearDepth);
+	uint64_t pixel = (udepth << 32) | clearColor;
 
 	framebuffer[pixelID] = pixel;
 }
@@ -246,15 +244,11 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 			uint64_t pixel = c_target.colorbuffer[sourcePixelID];
 			float depth = __uint_as_float(pixel >> 32);
 			uint32_t C = pixel & 0xffffffff;
+			if(isinf(depth)) C = backgroundColor;
+
 			color.r += (C >>  0) & 0xff;
 			color.g += (C >>  8) & 0xff;
 			color.b += (C >> 16) & 0xff;
-
-			if(isinf(depth)){
-				color.r += (BACKGROUND_COLOR >>  0) & 0xff;
-				color.g += (BACKGROUND_COLOR >>  8) & 0xff;
-				color.b += (BACKGROUND_COLOR >> 16) & 0xff;
-			}
 
 			if(enableEDL){
 				edl += getEdlShadingFactor(c_target.colorbuffer, depth, source_x, source_y, supersamplingFactor);
