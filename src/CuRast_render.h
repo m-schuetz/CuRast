@@ -342,8 +342,6 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 void CuRast::draw(Scene* scene, vector<View> views){
 
 	View view = views[0]; // We discarded support for multiple views for now.
-	mat4 viewI = inverse(view.view);
-	vec3 cameraPos = vec3(viewI * vec4(0.0f, 0.0f, 0.0f, 1.0f));
 
 	int supersamplingFactor = CuRastSettings::supersamplingFactor;
 
@@ -351,12 +349,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	target.colorbuffer = (u64*)cvm_colorbuffer->cptr;
 	target.width = supersamplingFactor * view.framebuffer->width;
 	target.height = supersamplingFactor * view.framebuffer->height;
-	target.view = view.view;
-	target.viewI = viewI;
 	target.proj = view.proj;
-	target.cameraPos = cameraPos;
-
-	auto& dvlist = Runtime::debugValueList;
 
 	int numPixels = target.width * target.height;
 
@@ -410,7 +403,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			&viewHeight,
 			&mouse_X,
 			&mouse_Y,
-			&cptr_state,
 			&CuRastSettings::enableEDL,
 			&CuRastSettings::showInset,
 			&backgroundColor
@@ -423,12 +415,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	}
 
 	unmapCudaVk(mappings);
-
-	cuMemcpyDtoHAsync((void*)deviceState, cptr_state, sizeof(DeviceState), 0);
-
-	if(deviceState->dbg_fragcount > 0){
-		dvlist.push_back({"fragcounter", format("{:L}", deviceState->dbg_fragcount)});
-	}
 
 	CuRastSettings::requestScreenshot = nullptr;
 }

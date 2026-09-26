@@ -868,30 +868,6 @@ size_t byteSizeOf(const vector<T>& v){
 
 
 
-struct UnbufferedFile{
-
-	string path;
-	void* handle = nullptr;   // windows
-	int fd = -1;              // linux, opened with O_DIRECT if possible
-	int fd_buffered = -1;     // linux, fallback if O_DIRECT reads are rejected
-	int64_t sectorSize = 0;
-
-	static shared_ptr<UnbufferedFile> open(string path);
-	void read(uint64_t start, uint64_t size, void* target);
-	void close();
-
-};
-
-
-// IMPORTANT: This function has special alignment requirements that must be considered, at least on windows. 
-// - The target buffer, start, and size must be aligned to the disks sector size. Typically 4096 byte on current SSDs.
-// - Allocating with malloc appears to be dangerous due to potentially bad alignment. _aligned_malloc and _aligned_free seem to be the way to go.
-// - It _appears_ to also work our with cuMemAllocHost, but I am not sure if it is guaranteed. 
-//
-// Basically, it reads whole disk sectors, not bytes. 
-void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* target);
-uint64_t getPhysicalSectorSize(string path);
-
 template <typename T, typename Func>
 void process_parallel(vector<T>& v, Func func) {
 	for_each(std::execution::par, v.begin(), v.end(), [&v, &func](T& elem) {

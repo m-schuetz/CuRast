@@ -108,11 +108,6 @@ struct Timings{
 
 };
 
-struct StartStop{
-	uint64_t t_start;
-	uint64_t t_end;
-};
-
 struct Runtime{
 
 	struct GuiItem{
@@ -134,8 +129,6 @@ struct Runtime{
 	inline static unordered_map<string, string> debugValues;
 	inline static vector<std::pair<string, string>> debugValueList;
 
-	inline static int totalTileFragmentCount;
-	inline static double duration_sceneNodeUpdate;
 
 	inline static glm::dvec2 mousePosition = {0.0, 0.0};
 	inline static int mouseButtons = 0;
@@ -146,7 +139,6 @@ struct Runtime{
 	};
 	inline static bool measureTimings;
 	inline static Timings timings;
-	inline static vector<StartStop> profileTimings;
 
 	Runtime(){
 		

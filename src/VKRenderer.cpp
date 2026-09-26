@@ -373,8 +373,6 @@ void VKRenderer::init() {
 	createSyncObjects();
 	initImGui();
 
-	Timer::initVulkan(physDevice, device, FRAMES_IN_FLIGHT);
-
 	view.framebuffer = VKFramebuffer::create("main_fbo");
 	view.framebuffer->setSize(128, 128);
 
@@ -435,8 +433,6 @@ void VKRenderer::destroy() {
 	for (auto pool : commandPools) vkDestroyCommandPool(device, pool, nullptr);
 	commandPools.clear();
 	commandBuffers.clear();
-
-	Timer::destroyVulkan(device);
 
 	vkDestroyDevice(device, nullptr);
 	device = VK_NULL_HANDLE;
@@ -601,39 +597,15 @@ void VKRenderer::createLogicalDevice() {
 		VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
 	};
 
-	VkPhysicalDeviceVulkan11Features vulkan11Features = {};
-	vulkan11Features.sType                = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-	vulkan11Features.shaderDrawParameters  = VK_TRUE;
-	vulkan11Features.storagePushConstant16 = VK_TRUE;
-
-	VkPhysicalDeviceVulkan12Features vulkan12Features = {};
-	vulkan12Features.sType                                    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-	vulkan12Features.bufferDeviceAddress                      = VK_TRUE;
-	vulkan12Features.runtimeDescriptorArray                   = VK_TRUE;
-	vulkan12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-	vulkan12Features.descriptorBindingVariableDescriptorCount  = VK_TRUE;
-	vulkan12Features.descriptorBindingPartiallyBound           = VK_TRUE;
-
+	// dynamicRendering: ImGui. synchronization2: image barriers in recordCommandBuffer()
 	VkPhysicalDeviceVulkan13Features vulkan13Features = {};
 	vulkan13Features.sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 	vulkan13Features.dynamicRendering = VK_TRUE;
 	vulkan13Features.synchronization2 = VK_TRUE;
 
-	VkPhysicalDeviceVulkan14Features vulkan14Features = {};
-	vulkan14Features.sType          = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
-	vulkan14Features.hostImageCopy  = VK_TRUE;
-
-	vulkan11Features.pNext    = &vulkan12Features;
-	vulkan12Features.pNext    = &vulkan13Features;
-	vulkan13Features.pNext    = &vulkan14Features;
-
 	VkPhysicalDeviceFeatures2 features2 = {};
 	features2.sType                         = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-	features2.pNext                         = &vulkan11Features;
-	features2.features.multiDrawIndirect    = VK_TRUE;
-	features2.features.shaderInt64          = VK_TRUE;
-	features2.features.shaderInt16          = VK_TRUE;
-	features2.features.sparseBinding        = VK_TRUE;
+	features2.pNext                         = &vulkan13Features;
 
 	VkDeviceCreateInfo deviceCI = {};
 	deviceCI.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -1063,10 +1035,6 @@ void VKRenderer::loop(
 		Runtime::frame_keys.clear();
 		Runtime::frame_actions.clear();
 		Runtime::frame_mods.clear();
-
-		for (auto& r : Timer::resolveVulkan(device, currentFrame)){
-			Runtime::timings.add(r.label, r.milliseconds);
-		}
 
 		// Acquire next swapchain image
 		uint32_t imageIndex;

@@ -101,52 +101,6 @@ void makeMemory(){
 				ImGui::EndTable();
 			}
 
-			ImGui::Text("===============================");
-			ImGui::Text("## Vulkan Buffers");
-			ImGui::Text("===============================");
-
-			if(ImGui::BeginTable("Memory", 2, flags)){
-
-				ImGui::TableSetupColumn("Label",             ImGuiTableColumnFlags_WidthStretch, 3.0f);
-				ImGui::TableSetupColumn("allocated/comitted memory",  ImGuiTableColumnFlags_WidthStretch, 1.0f);
-
-				ImGui::TableHeadersRow();
-
-				int64_t sum = 0;
-				for(VKBuffer* buffer : MemoryManager::allocations_vulkan){
-					
-					ImGui::TableNextRow();
-
-					ImGui::TableNextColumn();
-					ImGui::Text(buffer->label.c_str());
-
-					ImGui::TableNextColumn();
-					string strMemory = format(getSaneLocale(), "{:L}", buffer->size);
-					alignRight(strMemory);
-					ImGui::Text(strMemory.c_str());
-
-					sum += buffer->size;
-				}
-
-				{
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					ImGui::Text("-----------------------");
-					ImGui::TableNextColumn();
-					ImGui::Text(" ");
-
-					ImGui::TableNextRow();
-					ImGui::TableNextColumn();
-					ImGui::Text("Total");
-					ImGui::TableNextColumn();
-					string strTotal = format(getSaneLocale(), "{:L}", sum);
-					alignRight(strTotal);
-					ImGui::Text(strTotal.c_str());
-				}
-
-				ImGui::EndTable();
-			}
-
 		}
 
 		CuRastSettings::showMemoryInfos = open;

@@ -38,22 +38,13 @@ struct CuRast{
 
 	Scene scene;
 
-	DeviceState* deviceState = nullptr;
-	CUdeviceptr cptr_state;
-
-	CommonLaunchArgs launchArgs;
-
 	bool requestInitScene = false;
 
 	static void setup();
 
-	CommonLaunchArgs getCommonLaunchArgs();
-
 	void drawGUI();
 	void resetEditor();
 	void inputHandling();
-	Uniforms getUniforms();
-	void initCudaProgram();
 
 	// GUI
 	void makeMenubar();

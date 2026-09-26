@@ -21,7 +21,6 @@ namespace std {
 
 #include "./utils.cuh"
 #include "./HostDeviceInterface.h"
-#include "../BitEdit.h"
 
 using glm::ivec2;
 using glm::i8vec4;
@@ -103,108 +102,12 @@ float getEdlShadingFactor(uint64_t* colorbuffer, float depth, int x, int y, int 
 
 
 extern "C" __global__
-void kernel_enlarge(
-	cudaSurfaceObject_t gl_desktop,
-	uint64_t* fbo_enlarge,
-	int width, 
-	int height,
-	int mouseX,
-	int mouseY,
-	DeviceState* state,
-	bool enableEDL
-) {
-	auto grid = cg::this_grid();
-
-	int numPixels = width * height;
-
-	int n = 20;
-	uint64_t DEFAULT = uint64_t(__float_as_uint(INFINITY)) << 32 | 0xff0000ff;
-
-	// Enlarge horizontally, write result to temp buffer
-	process(numPixels, [&](int pixelID){
-		int x = pixelID % c_target.width;
-		int y = pixelID / c_target.width;
-
-		uint64_t closest = DEFAULT;
-		for(int dx = -n; dx <= n; dx++){
-			
-			int sx = x + dx;
-			int sy = y;
-
-			if(sx < 0 || sx >= c_target.width) continue;
-
-			int sourcePixelID = sx + sy * c_target.width;
-			uint64_t pixel = c_target.colorbuffer[sourcePixelID];
-			
-			// add offsets to the depth of points, based on how far they are from the center
-			float depth = __uint_as_float(pixel >> 32);
-			if(!isinf(depth)){
-				uint64_t color = pixel & 0xffffffff;
-				float f = 0.01f * abs(dx * dx) + 1.0f;
-				depth = depth * f;
-				pixel = (uint64_t(__float_as_uint(depth)) << 32) | color;
-			}
-
-			closest = min(closest, pixel);
-		}
-
-		if(closest != DEFAULT){
-			fbo_enlarge[pixelID] = closest;
-		}else{
-			fbo_enlarge[pixelID] = c_target.colorbuffer[pixelID];
-		}
-	});
-
-	grid.sync();
-
-	// Enlarge vertically, write result back in main color buffer
-	process(numPixels, [&](int pixelID){
-		int x = pixelID % c_target.width;
-		int y = pixelID / c_target.width;
-
-		uint64_t closest = DEFAULT;
-		for(int dy = -n; dy <= n; dy++){
-			
-			int sx = x;
-			int sy = y + dy;
-
-			if(sy < 0 || sy >= c_target.height) continue;
-
-			int sourcePixelID = sx + sy * c_target.width;
-			uint64_t pixel = fbo_enlarge[sourcePixelID];
-
-			// add offsets to the depth of points, based on how far they are from the center
-			float depth = __uint_as_float(pixel >> 32);
-			if(!isinf(depth)){
-				uint64_t color = pixel & 0xffffffff;
-				float f = 0.01f * abs(dy * dy) + 1.0f;
-				depth = depth * f;
-				pixel = (uint64_t(__float_as_uint(depth)) << 32) | color;
-			}
-
-			closest = min(closest, pixel);
-		}
-
-		if(closest != DEFAULT){
-			c_target.colorbuffer[pixelID] = closest;
-		}else{
-			c_target.colorbuffer[pixelID] = fbo_enlarge[pixelID];
-		}
-	});
-
-}
-
-
-
-
-extern "C" __global__
 void kernel_resolve_colorbuffer_to_opengl_2D(
 	cudaSurfaceObject_t gl_desktop,
 	int width, 
 	int height,
 	int mouseX,
 	int mouseY,
-	DeviceState* state,
 	bool enableEDL,
 	bool showInset,
 	uint32_t backgroundColor

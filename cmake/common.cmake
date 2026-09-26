@@ -5,7 +5,6 @@ function(ADD_IMGUI TARGET_NAME)
 
 	target_sources(${TARGET_NAME} PRIVATE
 		libs/imgui/imgui.cpp
-		libs/imgui/imgui_demo.cpp
 		libs/imgui/imgui_draw.cpp
 		libs/imgui/imgui_tables.cpp
 		libs/imgui/imgui_widgets.cpp
@@ -13,20 +12,6 @@ function(ADD_IMGUI TARGET_NAME)
 		libs/imgui/backends/imgui_impl_vulkan.cpp)
 endfunction()
 
-function(ADD_IMPLOT TARGET_NAME)
-	target_include_directories(${TARGET_NAME} PRIVATE
-		libs/implot)
-	target_sources(${TARGET_NAME} PRIVATE
-		libs/implot/implot_items.cpp
-		libs/implot/implot.cpp)
-endfunction()
-
-function(ADD_IMGUIZMO TARGET_NAME)
-	target_include_directories(${TARGET_NAME} PRIVATE
-		libs/ImGuizmo-1.83)
-	target_sources(${TARGET_NAME} PRIVATE
-		libs/ImGuizmo-1.83/ImGuizmo.cpp)
-endfunction()
 
 
 
@@ -52,6 +37,7 @@ function(ADD_CUDA TARGET_NAME)
 		CUDA::nvJitLink
 	)
 
+	# Not linked, but used at runtime to locate the toolkit's include directories for NVRTC
 	target_compile_definitions(${TARGET_NAME} PRIVATE CUDA_DEVRTLIB="${CUDA_DEVRTLIB}")
 endfunction()
 

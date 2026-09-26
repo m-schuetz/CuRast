@@ -9,13 +9,6 @@
 #include "CudaVirtualMemory.h"
 #include "VKRenderer.h"
 
-// Usage flags are a strong contended for dumbest things in Vulkan. Just give me device memory...
-constexpr VkBufferUsageFlags DEFAULT_USAGE_FLAGS = 
-	VK_BUFFER_USAGE_STORAGE_BUFFER_BIT 
-	| VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT 
-	| VK_BUFFER_USAGE_2_INDIRECT_BUFFER_BIT 
-	| VK_BUFFER_USAGE_2_INDEX_BUFFER_BIT;
-
 struct MemoryManager{
 
 	struct Allocation {
@@ -26,7 +19,6 @@ struct MemoryManager{
 
 	inline static mutex mtx;
 	inline static vector<Allocation> allocations;
-	inline static vector<VKBuffer*> allocations_vulkan;
 	inline static vector<CudaVirtualMemory*> cudaVirtual;
 
 	inline static CudaVirtualMemory* allocVirtualCuda(uint64_t virtualCapacity, string label = "none"){
@@ -51,20 +43,6 @@ struct MemoryManager{
 	}
 
 	
-
-	inline static VKBuffer* allocVulkan(
-		int64_t size, 
-		string label,
-		VkBufferUsageFlags usageFlags = DEFAULT_USAGE_FLAGS, 
-		VkMemoryPropertyFlags memoryPropertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-	){
-		VKBuffer* buffer = new VKBuffer(size, usageFlags, memoryPropertyFlags);
-		buffer->label = label;
-
-		allocations_vulkan.push_back(buffer);
-
-		return buffer;
-	}
 
 	static void free(CUdeviceptr cptr) {
 		if (cptr == 0) {
@@ -103,10 +81,6 @@ struct MemoryManager{
 
 		for(int i = 0; i < allocations.size(); i++){
 			bytes += allocations[i].size;
-		}
-
-		for(auto memory : allocations_vulkan){
-			bytes += memory->size;
 		}
 
 		for(auto memory : cudaVirtual){

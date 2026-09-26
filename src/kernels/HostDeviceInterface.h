@@ -36,7 +36,6 @@
 
 // constexpr uint32_t BACKGROUND_COLOR = 0xff887766;
 constexpr uint32_t BACKGROUND_COLOR = 0xffffffff;
-constexpr uint64_t DEFAULT_PIXEL = (uint64_t(0x7f800000) << 32) | BACKGROUND_COLOR;
 
 // Rendering las files directly from the memory-mapped file is limited to the first N points
 constexpr uint64_t MAX_LAS_POINTS = 2'000'000;
@@ -44,90 +43,13 @@ constexpr uint64_t MAX_LAS_POINTS = 2'000'000;
 struct Box3 {
 	vec3 min = { Infinity, Infinity, Infinity };
 	vec3 max = { -Infinity, -Infinity, -Infinity };
-
-	bool isDefault() {
-		return min.x == Infinity && min.y == Infinity && min.z == Infinity && max.x == -Infinity && max.y == -Infinity && max.z == -Infinity;
-	}
-
-	bool isEqual(Box3 box, float epsilon) {
-		float diff_min = length(box.min - min);
-		float diff_max = length(box.max - max);
-
-		if (diff_min >= epsilon) return false;
-		if (diff_max >= epsilon) return false;
-
-		return true;
-	}
-
-	void extend(vec3 v){
-		this->min.x = ::min(this->min.x, v.x);
-		this->min.y = ::min(this->min.y, v.y);
-		this->min.z = ::min(this->min.z, v.z);
-		this->max.x = ::max(this->max.x, v.x);
-		this->max.y = ::max(this->max.y, v.y);
-		this->max.z = ::max(this->max.z, v.z);
-	}
-
-	Box3 transform(mat4 matrix){
-
-		Box3 result;
-
-		vec3 corners[8] = {
-			{min.x, min.y, min.z},
-			{max.x, min.y, min.z},
-			{min.x, max.y, min.z},
-			{max.x, max.y, min.z},
-			{min.x, min.y, max.z},
-			{max.x, min.y, max.z},
-			{min.x, max.y, max.z},
-			{max.x, max.y, max.z},
-		};
-
-		for(auto& c : corners){
-			result.extend(vec3(matrix * vec4(c, 1.0f)));
-		}
-
-		return result;
-	}
-};
-
-struct DeviceState{
-	int counter;
-	uint64_t dbg_fragcount;
 };
 
 struct RenderTarget{
 	uint64_t* colorbuffer;
 	int width;
 	int height;
-	mat4 view;
-	mat4 viewI;
 	mat4 proj;
-	vec3 cameraPos;
-	float f;
-	float aspect;
-	bool debug;
-};
-
-struct Uniforms{
-	mat4 world;
-	mat4 camWorld;
-	mat4 transform;
-	float time;
-	float pad;
-	uint32_t frameCount;
-
-	struct {
-		bool show;
-		ivec2 start;
-		ivec2 size;
-	} inset;
-
-};
-
-struct CommonLaunchArgs{
-	Uniforms uniforms;
-	DeviceState* state;
 };
 
 

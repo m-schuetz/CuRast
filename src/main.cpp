@@ -24,7 +24,6 @@
 #include "stb/stb_image_write.h"
 #include "json/json.hpp"
 #include "CuRast.h"
-#include "MappedFile.h"
 #include "types.h"
 #include "scene/LasfileNode.h"
 #include "scene/PotreeFileNode.h"

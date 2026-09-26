@@ -384,7 +384,6 @@ struct CudaModularProgram{
 		for(auto module : modules){
 			NVJITLINK_SAFE_CALL(handle, nvJitLinkAddData(handle, NVJITLINK_INPUT_LTOIR, (void *)module->ltoir, module->ltoirSize, module->name.c_str()));
 		}
-		NVJITLINK_SAFE_CALL(handle, nvJitLinkAddFile(handle, NVJITLINK_INPUT_ANY, CUDA_DEVRTLIB));
 
 		NVJITLINK_SAFE_CALL(handle, nvJitLinkComplete(handle));
 		NVJITLINK_SAFE_CALL(handle, nvJitLinkGetLinkedCubinSize(handle, &cubinSize));

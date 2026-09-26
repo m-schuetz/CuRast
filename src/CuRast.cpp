@@ -8,9 +8,6 @@ using json = nlohmann::json;
 
 void CuRast::setup(){
 	CuRast::instance = new CuRast();
-	CuRast* editor = CuRast::instance;
-
-	editor->initCudaProgram();
 }
 
 void CuRast::resetEditor(){
@@ -18,55 +15,12 @@ void CuRast::resetEditor(){
 }
 
 
-Uniforms CuRast::getUniforms(){
-	Uniforms uniforms;
-	uniforms.time            = now();
-	uniforms.frameCount      = VKRenderer::frameCount;
-	//uniforms.measure         = Runtime::measureTimings;
-
-	uniforms.inset.show      = CuRastSettings::showInset;
-	uniforms.inset.start     = {16 * 60, 16 * 50};
-	uniforms.inset.size      = {16, 16};
-
-	glm::mat4 world(1.0f);
-	glm::mat4 view           = VKRenderer::camera->view;
-	glm::mat4 camWorld       = VKRenderer::camera->world;
-	glm::mat4 proj           = VKRenderer::camera->proj;
-
-	uniforms.world           = world;
-	uniforms.camWorld        = camWorld;
-
-	return uniforms;
-}
-
-CommonLaunchArgs CuRast::getCommonLaunchArgs(){
-
-	CommonLaunchArgs launchArgs;
-	launchArgs.uniforms       = getUniforms();
-	launchArgs.state          = (DeviceState*)cptr_state;
-	
-	return launchArgs;
-};
-
-void CuRast::initCudaProgram(){
-	cuMemAllocHost((void**)&deviceState , sizeof(DeviceState));
-	cptr_state = MemoryManager::alloc(sizeof(DeviceState), "device state");
-	cuMemsetD8(cptr_state, 0, sizeof(DeviceState));
-}
-
 void CuRast::inputHandling(){
 	
 	auto editor = CuRast::instance;
 	auto& scene = editor->scene;
-	auto& launchArgs = editor->launchArgs;
 
 	bool consumed = false;
-
-	RenderTarget target;
-	target.width = VKRenderer::width;
-	target.height = VKRenderer::height;
-	target.view = mat4(VKRenderer::camera->view); // * scene.transform;
-	target.proj = VKRenderer::camera->proj;
 
 	bool isCtrlDown        = Runtime::keyStates[341] != 0;
 	bool isAltDown         = Runtime::keyStates[342] != 0;
@@ -166,8 +120,6 @@ void CuRast::update(){
 	}
 
 	Timer::enabled = Runtime::measureTimings;
-
-	launchArgs = getCommonLaunchArgs();
 
 	scene.updateTransformations();
 	inputHandling();
