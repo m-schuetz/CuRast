@@ -137,8 +137,6 @@ void CuRast::makeToolbar(){
 
 				startSection("Dev");
 
-				ImGui::Checkbox("bounding boxes", &CuRastSettings::showBoundingBoxes);
-				ImGui::SameLine();
 				ImGui::Checkbox("frustum culling", &CuRastSettings::enableFrustumCulling);
 				ImGui::SameLine();
 				ImGui::Checkbox("Inset", &CuRastSettings::showInset);

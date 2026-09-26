@@ -20,14 +20,6 @@ struct MappedTextures{
 
 static unordered_map<int64_t, int64_t> lastImportedVersion;
 
-// implemented in lines.cu 
-void launch_drawBoundingBoxes(
-	const RenderTarget& target,
-	BoundingBox* boxes,
-	u32 numBoxes,
-	u32* numProcessedBatches
-);
-
 MappedTextures mapCudaVk(vector<shared_ptr<VKTexture>> textures){
 	MappedTextures mappings;
 	for(auto& tex : textures){
@@ -110,40 +102,6 @@ bool canAccessPageableMemory(){
 	}();
 
 	return supported;
-}
-
-void drawPoints(Scene* scene, View view, RenderTarget& target){
-	
-	static CudaModularProgram* prog = new CudaModularProgram({
-		.modules = {"./src/kernels/points.cu",}
-	});
-	
-	
-	vector<SNCPoints*> nodes;
-	scene->forEach<SNCPoints>([&](SNCPoints* node){
-		nodes.push_back(node);
-	});
-	
-	u64 totalPoints = 0;
-	for(SNCPoints* node : nodes){
-		
-		mat4 worldView = mat4(view.view * node->transform_global);
-		
-		void* args[] = {
-			&target,
-			&node->cptr_positions,
-			&node->cptr_colors,
-			&node->numPoints,
-			&worldView
-		};
-		prog->launchCooperative("kernel_drawPoints", args, {.blocksize = 256});
-		
-		totalPoints += node->numPoints;
-	}
-	
-	auto& dvlist = Runtime::debugValueList;
-	dvlist.push_back({"num points", format("{:L}", totalPoints)});
-	
 }
 
 // Renders PotreeFileNodes directly from their memory-mapped octree.bin. 
@@ -430,40 +388,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		}, numPixels);
 	}
 
-	drawPoints(scene, view, target);
 	drawLasPoints(scene, view, target);
 	drawPotreeFiles(scene, view, target);
-
-	// DRAW BOUNDING BOXES
-	if(CuRastSettings::showBoundingBoxes){
-		vector<BoundingBox> boxes;
-		scene->root->traverse([&](SceneNode* node){
-			if(node->aabb.isDefault()) return;
-
-			BoundingBox box;
-			box.world = node->transform_global;
-			box.aabb  = node->aabb;
-
-			boxes.push_back(box);
-		});
-
-		if(boxes.size() > 0){
-			static CUdeviceptr cptr_numProcessedBatches = MemoryManager::alloc(4, "cptr_numProcessedBatches");
-			static CudaVirtualMemory* cvm_boxes = MemoryManager::allocVirtualCuda(40'000 * sizeof(BoundingBox), "boxes");
-			cvm_boxes->commit(boxes.size() * sizeof(BoundingBox));
-
-			cuMemcpyHtoDAsync(cvm_boxes->cptr, boxes.data(), byteSizeOf(boxes), 0);
-			cuMemsetD8Async(cptr_numProcessedBatches, 0, 4, 0);
-
-			u32 numBoxes = boxes.size();
-			launch_drawBoundingBoxes(
-				target,
-				(BoundingBox*)cvm_boxes->cptr,
-				numBoxes,
-				(u32*)cptr_numProcessedBatches
-			);
-		}
-	}
 
 	int mouse_X = Runtime::mousePosition.x;
 	int mouse_Y = target.height - Runtime::mousePosition.y;

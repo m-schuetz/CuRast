@@ -131,12 +131,6 @@ struct CommonLaunchArgs{
 };
 
 
-// Box drawn as lines, e.g. the bounding box of a scene node
-struct BoundingBox{
-	mat4 world;
-	Box3 aabb;
-};
-
 struct PotreeNode{
 	u8* data; // Pointer to the memory-mapped location of this octree node
 	u64 numPoints;

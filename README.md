@@ -80,10 +80,9 @@ Run CuRast from the project root, since CUDA kernels are compiled at runtime fro
 
 ## Getting Started
 
-You can either drag&drop LAS/LAZ files into the application, or modify [initScene() in main.cpp](./src/main.cpp) to load at startup:
+Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds at startup:
 - `LasfileNode`: Memory-maps an uncompressed LAS file and renders its first 2 million points directly from the mapped file.
 - `PotreeFileNode`: Memory-maps a point cloud converted with [PotreeConverter 2.0](https://github.com/potree/PotreeConverter) and renders the most important octree nodes, up to a budget of 1 million points.
-- Drag&dropped LAS/LAZ files are loaded into GPU memory via laszip. 
 
 ### Program
 

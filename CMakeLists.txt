@@ -20,7 +20,6 @@ include(cmake/common.cmake)
 file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS 
 	src/*.[ch]pp
 	src/*.cu
-	src/kernels/lines.cu
 )
 
 # Choose GPU architectures (adjust for your machine). 
@@ -48,11 +47,6 @@ endif()
 target_include_directories(${TARGET_NAME} PRIVATE
 	./src
 	./libs
-)
-
-add_subdirectory(libs/laszip)
-target_link_libraries(${TARGET_NAME} PRIVATE 
-	laszip
 )
 
 # std::stacktrace lives in a separate library with libstdc++
