@@ -17,10 +17,6 @@
 
 #include "VKRenderer.h"
 #include "OrbitControls.h"
-#include "stb/stb_image.h"
-#include "stb/stb_image_write.h"
-#include "json/json.hpp"
-#include "stb/stb_image_resize2.h"
 #include "Runtime.h"
 #include "CuRastSettings.h"
 

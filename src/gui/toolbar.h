@@ -179,11 +179,7 @@ void CuRast::makeToolbar(){
 					glfwSetClipboardString(nullptr, str.c_str());
 				}
 
-				ImGui::SameLine();
-				if(ImGui::Button("Screenshot")){
-					CuRastSettings::requestScreenshot = make_shared<string>("");
-				}
-				
+
 				// ImGui::SameLine();
 				endSection();
 			}

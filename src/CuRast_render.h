@@ -38,51 +38,6 @@ void unmapCudaVk(MappedTextures& mappings){
 	cuStreamSynchronize((CUstream)CU_STREAM_DEFAULT);
 }
 
-void saveScreenshot(RenderTarget target, View view, CudaModularProgram* prog_resolve){
-
-	u64 numPixels = target.width * target.height;
-	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
-
-	u32 backgroundColor = 0;
-	uint8_t* bgRgba = (uint8_t*)&backgroundColor;
-	bgRgba[0] = clamp(CuRastSettings::background.x * 256.0f, 0.0f, 255.0f);
-	bgRgba[1] = clamp(CuRastSettings::background.y * 256.0f, 0.0f, 255.0f);
-	bgRgba[2] = clamp(CuRastSettings::background.z * 256.0f, 0.0f, 255.0f);
-	bgRgba[3] = 255;
-
-	void* args[] = {
-		&cptr_screenshot,
-		&CuRastSettings::enableEDL,
-		&view.framebuffer->width,
-		&view.framebuffer->height,
-		&backgroundColor
-	};
-	prog_resolve->launch2D("kernel_resolve_colorbuffer_to_screenshot", args, target.width, target.height);
-
-	void* screenshot_host = nullptr;
-	cuMemAllocHost(&screenshot_host, 4 * numPixels);
-	cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
-
-	string path = "";
-	if(*CuRastSettings::requestScreenshot == ""){
-		for(int i = 0; i <= 10'000'000; i++){
-			fs::create_directories("./screenshots");
-			path = format("./screenshots/screenshot_{}.png", i);
-
-			if(!fs::exists(path)) break;
-		}
-	}else{
-		path = *CuRastSettings::requestScreenshot;
-	}
-
-	int stride_in_bytes = target.width * 4;
-	stbi_flip_vertically_on_write(1);
-	stbi_write_png(path.c_str(), target.width, target.height, 4, screenshot_host, stride_in_bytes);
-
-	MemoryManager::free(cptr_screenshot);
-	cuMemFreeHost(screenshot_host);
-}
-
 #include "scene/LasfileNode.h"
 #include "scene/PotreeFileNode.h"
 
@@ -410,13 +365,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		prog->launch2D("kernel_resolve_colorbuffer_to_opengl_2D", args, target.width, target.height);
 	}
 
-	if(CuRastSettings::requestScreenshot){
-		saveScreenshot(target, view, prog);
-	}
-
 	unmapCudaVk(mappings);
-
-	CuRastSettings::requestScreenshot = nullptr;
 }
 
 void initialize(){

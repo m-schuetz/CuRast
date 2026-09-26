@@ -20,9 +20,6 @@
 
 
 #include "Runtime.h"
-#include "stb/stb_image.h"
-#include "stb/stb_image_write.h"
-#include "json/json.hpp"
 #include "CuRast.h"
 #include "types.h"
 #include "scene/LasfileNode.h"

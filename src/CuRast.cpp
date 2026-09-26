@@ -1,10 +1,7 @@
 
-#include "json/json.hpp"
-
 #include "CuRast.h"
 #include "VKRenderer.h"
 
-using json = nlohmann::json;
 
 void CuRast::setup(){
 	CuRast::instance = new CuRast();
