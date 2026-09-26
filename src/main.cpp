@@ -268,7 +268,9 @@ void initScene() {
 	// Runtime::controls->pitch  = -0.9;
 
 
-	string file = "/home/mschuetz/dev/resources/morro_bay_73M.laz_converted";
+	// string file = "/home/mschuetz/dev/resources/morro_bay_73M.laz_converted";
+	// string file = "/run/media/mschuetz/Lightning/resources/pointclouds/iconem/Meroe_NorthNecropolis_684M.las_converted";
+	string file = "/run/media/mschuetz/Lightning/resources/pointclouds/CA13_converted";
 	shared_ptr<PotreeFileNode> node = make_shared<PotreeFileNode>(file, "potree");
 	scene.root->children.push_back(node);
 
