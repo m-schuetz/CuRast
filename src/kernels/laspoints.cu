@@ -23,7 +23,15 @@ namespace std {
 #include "./glm/glm/gtx/transform.hpp"
 #include "./glm/glm/gtc/quaternion.hpp"
 
-#include "./utils.cuh"
+namespace cg = cooperative_groups;
+
+// Kernels are compiled with NVRTC, which has no <cstdint>
+typedef unsigned int uint32_t;
+typedef int int32_t;
+typedef unsigned char uint8_t;
+typedef unsigned long long uint64_t;
+typedef long long int64_t;
+
 #include "./HostDeviceInterface.h"
 #include "../types.h"
 
