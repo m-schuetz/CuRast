@@ -140,28 +140,8 @@ void CuRast::makeToolbar(){
 				ImGui::Checkbox("frustum culling", &CuRastSettings::enableFrustumCulling);
 				ImGui::SameLine();
 				ImGui::Checkbox("Inset", &CuRastSettings::showInset);
-				
-				// ImGui::SameLine();
-				// string strMeasure;
-				// if(CuRastSettings::measurementCountdown >= 0){
-				// 	strMeasure = format("Measure 60 frames ({:2})", CuRastSettings::measurementCountdown);
-				// }else{
-				// 	strMeasure = "Measure 60 frames";
-				// }
-				// if(ImGui::Button(strMeasure.c_str())){
-				// 	CuRastSettings::measurementCountdown = 60;
-				// }
 
-
-				endSection();
-
-			}
-
-			{ // MISC
-				ImGui::TableSetColumnIndex(2);
-
-				startSection("Misc");
-
+				ImGui::SameLine();
 				if(ImGui::Button("Copy Camera")){
 
 					auto pos = Runtime::controls->getPosition();
@@ -178,10 +158,21 @@ void CuRast::makeToolbar(){
 
 					glfwSetClipboardString(nullptr, str.c_str());
 				}
-
-
+				
 				// ImGui::SameLine();
+				// string strMeasure;
+				// if(CuRastSettings::measurementCountdown >= 0){
+				// 	strMeasure = format("Measure 60 frames ({:2})", CuRastSettings::measurementCountdown);
+				// }else{
+				// 	strMeasure = "Measure 60 frames";
+				// }
+				// if(ImGui::Button(strMeasure.c_str())){
+				// 	CuRastSettings::measurementCountdown = 60;
+				// }
+
+
 				endSection();
+
 			}
 
 			{ // Appearance
@@ -216,6 +207,13 @@ void CuRast::makeToolbar(){
 				ImGui::RadioButton("2x2##supersampling", (int*)&CuRastSettings::supersamplingFactor, 2);
 				ImGui::SameLine();
 				ImGui::RadioButton("4x4##supersampling", (int*)&CuRastSettings::supersamplingFactor, 4);
+
+				float pointBudgetM = float(CuRastSettings::pointBudget) / 1'000'000.0f;
+				ImGui::SetNextItemWidth(200.0f);
+				if(ImGui::SliderFloat("Point Budget", &pointBudgetM, 1.0f, 20.0f, "%.1f M")){
+					CuRastSettings::pointBudget = int64_t(double(pointBudgetM) * 1'000'000.0);
+				}
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of points rendered from Potree octrees.");
 				
 				endSection();
 			}

@@ -62,7 +62,7 @@ Run CuRast from the project root, since CUDA kernels are compiled at runtime fro
 
 Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds at startup:
 - `LasfileNode`: Memory-maps an uncompressed LAS file and renders its first 2 million points directly from the mapped file.
-- `PotreeFileNode`: Memory-maps a point cloud converted with [PotreeConverter 2.0](https://github.com/potree/PotreeConverter) and renders the most important octree nodes, up to a budget of 1 million points.
+- `PotreeFileNode`: Memory-maps a point cloud converted with [PotreeConverter 2.0](https://github.com/potree/PotreeConverter) and renders the most important octree nodes, up to a point budget that can be adjusted in the toolbar (1M to 20M, default 5M).
 
 ### Program
 

@@ -157,7 +157,7 @@ bool canAccessPageableMemory(){
 // Requires GPU access to pageable host memory (e.g. HMM on linux).
 void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 
-	constexpr u64 POINT_BUDGET = 5'000'000;
+	u64 pointBudget = CuRastSettings::pointBudget;
 	
 	static CudaModularProgram* prog = new CudaModularProgram({
 		.modules = {"./src/kernels/potreeFileRenderer.cu",}
@@ -283,7 +283,7 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 		file->loadHierarchyChunk(item.nodeIndex);
 		const PotreeHierarchyNode& node = file->hierarchyNodes[item.nodeIndex];
 
-		if(numVisiblePoints + node.numPoints > POINT_BUDGET) break;
+		if(numVisiblePoints + node.numPoints > pointBudget) break;
 
 		numVisiblePoints += node.numPoints;
 

@@ -14,6 +14,7 @@ struct CuRastSettings{
 	static inline bool showOverlay = true;
 	static inline bool showInset = false;
 	static inline int supersamplingFactor = 1;
+	static inline int64_t pointBudget = 5'000'000; // max. number of points rendered from Potree octrees
 
 	static inline vec4 background = {1.0f, 1.0f, 1.0f, 1.0f};
 };
