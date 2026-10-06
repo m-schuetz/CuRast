@@ -522,3 +522,4 @@ make.bat
 dbg.glb.json
 screenshots/*
 benchmarks/*
+resources/hakone/*

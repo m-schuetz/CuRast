@@ -52,3 +52,48 @@ struct PotreeNode{
 	vec3 scale;
 	vec3 offset;
 };
+
+// A cluster of a clustered LOD mesh, as stored in clusters.bin by tools/clodbuilder.
+// See tools/clodbuilder/README.md for the meaning of the bounds and errors.
+struct Cluster{
+	vec3 aabbMin;
+	u32 vertexOffset;      // first vertex in positions/uvs
+	vec3 aabbMax;
+	u32 triangleOffset;    // first triangle in triangles
+	vec4 cullSphere;       // xyz: center, w: radius
+	vec4 lodSphere;
+	vec4 parentSphere;
+	float lodError;
+	float parentError;     // FLT_MAX if the cluster's group was not simplified any further
+	u32 vertexCount;       // <= 128
+	u32 triangleCount;     // <= 128
+	u32 level;             // 0 = original mesh
+	u32 group;
+	i32 refinedGroup;
+	u32 padding;
+};
+static_assert(sizeof(Cluster) == 112);
+
+enum ClusterColorMode : int {
+	CLUSTER_COLOR_TEXTURE = 0,
+	CLUSTER_COLOR_LEVEL   = 1, // color by LOD level
+	CLUSTER_COLOR_CLUSTER = 2, // random color per cluster
+};
+
+// A ClusteredMeshNode's data in VRAM, plus the per-frame parameters for drawing it
+struct ClusteredMesh{
+	Cluster* clusters;
+	vec3* positions;
+	vec2* uvs;
+	u8* triangles;           // 3 cluster-local vertex indices per triangle
+	u64 texture;             // cudaTextureObject_t, 0 if the mesh has no texture
+	u32 numClusters;
+
+	mat4 worldView;
+	vec3 cameraPosition;     // in the mesh's coordinate system
+	vec4 frustumPlanes[5];   // in the mesh's coordinate system: left, right, bottom, top, near. xyz: normal, w: distance
+	bool frustumCulling;
+	float znear;
+	float lodErrorThreshold; // in pixels
+	int colorMode;           // ClusterColorMode
+};

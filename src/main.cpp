@@ -21,6 +21,7 @@
 #include "types.h"
 #include "scene/LasfileNode.h"
 #include "scene/PotreeFileNode.h"
+#include "scene/ClusteredMeshNode.h"
 
 
 
@@ -60,17 +61,26 @@ void initScene() {
 
 	// string file = "/home/mschuetz/dev/resources/morro_bay_73M.laz_converted";
 	// string file = "/run/media/mschuetz/Lightning/resources/pointclouds/iconem/Meroe_NorthNecropolis_684M.las_converted";
-	string file = "/run/media/mschuetz/Lightning/resources/pointclouds/CA13_converted";
-	shared_ptr<PotreeFileNode> node = make_shared<PotreeFileNode>(file, "potree");
+	// string file = "/run/media/mschuetz/Lightning/resources/pointclouds/CA13_converted";
+	// shared_ptr<PotreeFileNode> node = make_shared<PotreeFileNode>(file, "potree");
+	// scene.root->children.push_back(node);
+
+	// PotreeAttribute* position = node->findAttribute("position");
+	// dvec3 tightMin = {position->min[0], position->min[1], position->min[2]};
+	// dvec3 tightMax = {position->max[0], position->max[1], position->max[2]};
+	// dvec3 origin   = (node->min + node->max) * 0.5;
+
+	// Runtime::controls->target = (tightMin + tightMax) * 0.5 - origin;
+	// Runtime::controls->radius = 0.8 * length(tightMax - tightMin);
+	// Runtime::controls->pitch  = -0.9;
+
+	// clustered LOD mesh, created with tools/clodbuilder
+	string file = "/home/mschuetz/dev/workspaces/CuRast/resources/hakone";
+	shared_ptr<ClusteredMeshNode> node = make_shared<ClusteredMeshNode>(file, "hakone");
 	scene.root->children.push_back(node);
 
-	PotreeAttribute* position = node->findAttribute("position");
-	dvec3 tightMin = {position->min[0], position->min[1], position->min[2]};
-	dvec3 tightMax = {position->max[0], position->max[1], position->max[2]};
-	dvec3 origin   = (node->min + node->max) * 0.5;
-
-	Runtime::controls->target = (tightMin + tightMax) * 0.5 - origin;
-	Runtime::controls->radius = 0.8 * length(tightMax - tightMin);
+	Runtime::controls->target = (node->aabb.min + node->aabb.max) * 0.5f;
+	Runtime::controls->radius = 0.8 * length(node->aabb.max - node->aabb.min);
 	Runtime::controls->pitch  = -0.9;
 
 

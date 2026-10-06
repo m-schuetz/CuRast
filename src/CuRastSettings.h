@@ -22,6 +22,8 @@ struct CuRastSettings{
 	static inline int supersamplingFactor = 1;
 	static inline int64_t pointBudget = 5'000'000; // max. number of points rendered from Potree octrees
 	static inline int potreeRenderPath = POTREE_MEMORY_MAPPED;
+	static inline float lodErrorThreshold = 1.0f;  // clustered LOD: max. projected simplification error, in pixels
+	static inline int clusterColorMode = CLUSTER_COLOR_TEXTURE;
 
 	static inline vec4 background = {1.0f, 1.0f, 1.0f, 1.0f};
 };

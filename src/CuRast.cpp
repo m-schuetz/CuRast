@@ -9,6 +9,7 @@
 #include "types.h"
 #include "scene/LasfileNode.h"
 #include "scene/PotreeFileNode.h"
+#include "scene/ClusteredMeshNode.h"
 #include "kernels/kernels.h"
 
 using namespace std;
@@ -543,6 +544,71 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 	
 }
 
+// Renders ClusteredMeshNodes, entirely from VRAM.
+// - kernel_selectClusters picks the clusters of the LOD cut for the current view, and culls them against the frustum.
+// - kernel_drawClusters rasterizes the selected clusters.
+void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
+
+	u64 numVisibleClusters = 0;
+	u64 numVisibleTriangles = 0;
+	bool hasClusteredMeshes = false;
+
+	scene->forEach<ClusteredMeshNode>([&](ClusteredMeshNode* node){
+
+		// no-op after the first frame
+		node->uploadToGpu();
+
+		dmat4 worldView = view.view * node->transform_global;
+		dmat4 worldViewProj = view.proj * worldView;
+
+		ClusteredMesh mesh;
+		mesh.clusters          = node->gpu_clusters;
+		mesh.positions         = node->gpu_positions;
+		mesh.uvs               = node->gpu_uvs;
+		mesh.triangles         = node->gpu_triangles;
+		mesh.texture           = node->gpu_texture;
+		mesh.numClusters       = node->clusters.size();
+		mesh.worldView         = mat4(worldView);
+		mesh.cameraPosition    = vec3(inverse(worldView) * dvec4(0.0, 0.0, 0.0, 1.0));
+		mesh.frustumCulling    = CuRastSettings::enableFrustumCulling;
+		mesh.znear             = float(view.proj[3][2]); // the infinite projection stores the near plane distance here
+		mesh.lodErrorThreshold = CuRastSettings::lodErrorThreshold;
+		mesh.colorMode         = CuRastSettings::clusterColorMode;
+
+		// frustum planes in the mesh's coordinate system
+		dvec4 row0 = glm::row(worldViewProj, 0);
+		dvec4 row1 = glm::row(worldViewProj, 1);
+		dvec4 row2 = glm::row(worldViewProj, 2);
+		dvec4 row3 = glm::row(worldViewProj, 3);
+
+		auto normalizedPlane = [](dvec4 p){
+			return vec4(p / glm::length(dvec3(p)));
+		};
+
+		mesh.frustumPlanes[0] = normalizedPlane(row3 + row0); // Left
+		mesh.frustumPlanes[1] = normalizedPlane(row3 - row0); // Right
+		mesh.frustumPlanes[2] = normalizedPlane(row3 + row1); // Bottom
+		mesh.frustumPlanes[3] = normalizedPlane(row3 - row1); // Top
+		mesh.frustumPlanes[4] = normalizedPlane(row3 - row2); // Near: clip.z is the near plane distance, i.e., w >= near
+
+		cudaMemsetAsync(node->gpu_counters, 0, 2 * sizeof(u32));
+		launch_selectClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
+		launch_drawClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
+
+		u32 counters[2];
+		cudaMemcpy(counters, node->gpu_counters, sizeof(counters), cudaMemcpyDeviceToHost);
+		numVisibleClusters += counters[0];
+		numVisibleTriangles += counters[1];
+		hasClusteredMeshes = true;
+	});
+
+	if(hasClusteredMeshes){
+		auto& dvlist = Runtime::debugValueList;
+		dvlist.push_back({"clusters", format("{:L}", numVisibleClusters)});
+		dvlist.push_back({"triangles", format("{:L}", numVisibleTriangles)});
+	}
+}
+
 void CuRast::draw(Scene* scene, vector<View> views){
 
 	View view = views[0]; // We discarded support for multiple views for now.
@@ -578,6 +644,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 	drawLasPoints(scene, view, target);
 	drawPotreeFiles(scene, view, target);
+	drawClusteredMeshes(scene, view, target);
 
 	int mouse_X = Runtime::mousePosition.x;
 	int mouse_Y = target.height - Runtime::mousePosition.y;

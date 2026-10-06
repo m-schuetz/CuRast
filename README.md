@@ -3,7 +3,7 @@
 
 <a href="https://diglib.eg.org/items/e0145eb3-5971-450b-b8ca-7eaf23332df7" target="_blank" rel="noopener noreferrer">[Paper]</a>
 
-> __Note__: This version of the code base renders point clouds only (LAS files and Potree 2.0 octrees, memory-mapped and rendered directly with CUDA). The triangle rasterization pipeline described in the paper, the Vulkan comparison renderer and the glTF/GLB loaders have been removed. 
+> __Note__: This version of the code base renders point clouds (LAS files and Potree 2.0 octrees, memory-mapped and rendered directly with CUDA), and clustered LOD meshes created with [tools/clodbuilder](tools/clodbuilder/README.md). The triangle rasterization pipeline described in the paper, the Vulkan comparison renderer and the glTF/GLB loaders have been removed. 
 
 __About__: [Nanite](https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf) has demonstrated that small triangles can be rasterized more efficiently with custom compute shaders than with the fixed-function hardware pipeline. Building on this insight, we explore how far this advantage can be pushed for real-time rendering of massive triangle datasets without relying on precomputed LODs or acceleration structures. 
 
@@ -75,6 +75,8 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds at startup
 | [src/scene/LasfileNode.h](src/scene/LasfileNode.h), [src/scene/PotreeFileNode.h](src/scene/PotreeFileNode.h) | Scene nodes for memory-mapped LAS files and Potree 2.0 octrees |
 | [src/kernels/laspoints.cu](src/kernels/laspoints.cu), [src/kernels/potreeFileRenderer.cu](src/kernels/potreeFileRenderer.cu) | CUDA kernels that render points directly from memory-mapped files |
 | [src/kernels/potreeDirectStorageRenderer.cu](src/kernels/potreeDirectStorageRenderer.cu) | CUDA kernel that renders Potree octree nodes read into VRAM via cuFile |
+| [src/scene/ClusteredMeshNode.h](src/scene/ClusteredMeshNode.h) | Scene node for clustered LOD meshes created with [tools/clodbuilder](tools/clodbuilder/README.md). Loads all files into RAM, and into VRAM on first draw. |
+| [src/kernels/trianglesClustered.cu](src/kernels/trianglesClustered.cu) | CUDA kernels that select the visible clusters of the LOD cut, and rasterize them |
 | [src/kernels/resolve.cu](src/kernels/resolve.cu) | Transforms the color buffer to a texture for display, including EDL |
 | [src/CuRast.cpp](src/CuRast.cpp) | Host-side draw code that launches the kernels, including the octree traversal for Potree files.  |
 

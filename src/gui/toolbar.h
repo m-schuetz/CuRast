@@ -158,7 +158,15 @@ void CuRast::makeToolbar(){
 
 					glfwSetClipboardString(nullptr, str.c_str());
 				}
-				
+
+				ImGui::Text("Clusters: ");
+				ImGui::SameLine();
+				ImGui::RadioButton("Texture##clusterColor", &CuRastSettings::clusterColorMode, CLUSTER_COLOR_TEXTURE);
+				ImGui::SameLine();
+				ImGui::RadioButton("LOD Level##clusterColor", &CuRastSettings::clusterColorMode, CLUSTER_COLOR_LEVEL);
+				ImGui::SameLine();
+				ImGui::RadioButton("Cluster ID##clusterColor", &CuRastSettings::clusterColorMode, CLUSTER_COLOR_CLUSTER);
+
 				// ImGui::SameLine();
 				// string strMeasure;
 				// if(CuRastSettings::measurementCountdown >= 0){
@@ -214,6 +222,11 @@ void CuRast::makeToolbar(){
 					CuRastSettings::pointBudget = int64_t(double(pointBudgetM) * 1'000'000.0);
 				}
 				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of points rendered from Potree octrees.");
+
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(150.0f);
+				ImGui::SliderFloat("LOD Error", &CuRastSettings::lodErrorThreshold, 0.1f, 32.0f, "%.1f px", ImGuiSliderFlags_Logarithmic);
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Clustered LOD meshes: Maximum projected simplification error, in pixels.");
 
 				ImGui::Text("Potree: ");
 				ImGui::SameLine();
