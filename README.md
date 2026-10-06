@@ -59,11 +59,14 @@ By default, kernels are compiled for the GPU(s) of the build machine. To build f
 
 ## Getting Started
 
-Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds at startup:
+Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds or meshes at startup:
 - `LasfileNode`: Memory-maps an uncompressed LAS file and renders its first 2 million points directly from the mapped file.
 - `PotreeFileNode`: Memory-maps a point cloud converted with [PotreeConverter 2.0](https://github.com/potree/PotreeConverter) and renders the most important octree nodes, up to a point budget that can be adjusted in the toolbar (1M to 20M, default 5M). The toolbar also switches between two render paths:
     - Memory-mapped: The GPU reads the points directly from the memory-mapped octree.bin.
     - Direct Storage: Each frame, the visible nodes are read from octree.bin into VRAM via cuFile ([GPUDirect Storage](https://docs.nvidia.com/gpudirect-storage/)), without caching. True SSD-to-GPU transfers need the nvidia-fs kernel module (or PCI P2PDMA) and a supported file system such as ext4 or xfs. Otherwise, cuFile runs in compatibility mode and reads via host memory. `/usr/local/cuda/gds/tools/gdscheck -p` shows which mode is available.
+- `ClusteredMeshNode`: Loads a clustered LOD mesh created with [tools/clodbuilder](tools/clodbuilder/README.md). Each frame, the GPU selects the clusters whose simplification error is below a threshold in pixels (toolbar: LOD Error) and rasterizes them. The toolbar switches where the clusters, vertices and triangles are read from:
+    - VRAM: Copied to VRAM on first use.
+    - Memory-mapped: The GPU reads them directly from the memory-mapped files. The texture is in VRAM in both cases.
 
 ### Program
 
@@ -75,7 +78,7 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds at startup
 | [src/scene/LasfileNode.h](src/scene/LasfileNode.h), [src/scene/PotreeFileNode.h](src/scene/PotreeFileNode.h) | Scene nodes for memory-mapped LAS files and Potree 2.0 octrees |
 | [src/kernels/laspoints.cu](src/kernels/laspoints.cu), [src/kernels/potreeFileRenderer.cu](src/kernels/potreeFileRenderer.cu) | CUDA kernels that render points directly from memory-mapped files |
 | [src/kernels/potreeDirectStorageRenderer.cu](src/kernels/potreeDirectStorageRenderer.cu) | CUDA kernel that renders Potree octree nodes read into VRAM via cuFile |
-| [src/scene/ClusteredMeshNode.h](src/scene/ClusteredMeshNode.h) | Scene node for clustered LOD meshes created with [tools/clodbuilder](tools/clodbuilder/README.md). Loads all files into RAM, and into VRAM on first draw. |
+| [src/scene/ClusteredMeshNode.h](src/scene/ClusteredMeshNode.h) | Scene node for clustered LOD meshes created with [tools/clodbuilder](tools/clodbuilder/README.md). Loads all files into RAM, memory-maps them, and copies them to VRAM on first use. |
 | [src/kernels/trianglesClustered.cu](src/kernels/trianglesClustered.cu) | CUDA kernels that select the visible clusters of the LOD cut, and rasterize them |
 | [src/kernels/resolve.cu](src/kernels/resolve.cu) | Transforms the color buffer to a texture for display, including EDL |
 | [src/CuRast.cpp](src/CuRast.cpp) | Host-side draw code that launches the kernels, including the octree traversal for Potree files.  |

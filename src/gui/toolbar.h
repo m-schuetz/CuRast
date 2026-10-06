@@ -159,7 +159,7 @@ void CuRast::makeToolbar(){
 					glfwSetClipboardString(nullptr, str.c_str());
 				}
 
-				ImGui::Text("Clusters: ");
+				ImGui::Text("Cluster colors: ");
 				ImGui::SameLine();
 				ImGui::RadioButton("Texture##clusterColor", &CuRastSettings::clusterColorMode, CLUSTER_COLOR_TEXTURE);
 				ImGui::SameLine();
@@ -235,6 +235,15 @@ void CuRast::makeToolbar(){
 				ImGui::SameLine();
 				ImGui::RadioButton("Direct Storage##potreeRenderPath", &CuRastSettings::potreeRenderPath, POTREE_DIRECT_STORAGE);
 				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame, visible nodes are read from octree.bin into VRAM via cuFile (GPUDirect Storage).");
+
+				ImGui::SameLine();
+				ImGui::Text("   Cluster data: ");
+				ImGui::SameLine();
+				ImGui::RadioButton("VRAM##clusterRenderPath", &CuRastSettings::clusterRenderPath, CLUSTERS_VRAM);
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Clusters, vertices and triangles are copied to VRAM on first use.");
+				ImGui::SameLine();
+				ImGui::RadioButton("Memory-mapped##clusterRenderPath", &CuRastSettings::clusterRenderPath, CLUSTERS_MEMORY_MAPPED);
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("The GPU reads clusters, vertices and triangles directly from the memory-mapped files (requires HMM). The texture stays in VRAM.");
 				
 				endSection();
 			}

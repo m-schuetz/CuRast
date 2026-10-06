@@ -544,10 +544,18 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 	
 }
 
-// Renders ClusteredMeshNodes, entirely from VRAM.
+// Renders ClusteredMeshNodes.
 // - kernel_selectClusters picks the clusters of the LOD cut for the current view, and culls them against the frustum.
 // - kernel_drawClusters rasterizes the selected clusters.
+// - Render paths (CuRastSettings::clusterRenderPath):
+//     - VRAM: Clusters, vertices and triangles are copied to VRAM on first use.
+//     - Memory-mapped: The kernels read them directly from the memory-mapped files.
+//       Requires GPU access to pageable host memory (e.g. HMM on linux).
+//   The texture is in VRAM in both cases.
 void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
+
+	bool memoryMapped = CuRastSettings::clusterRenderPath == CLUSTERS_MEMORY_MAPPED;
+	if(memoryMapped && !canAccessPageableMemory()) return;
 
 	u64 numVisibleClusters = 0;
 	u64 numVisibleTriangles = 0;
@@ -555,17 +563,25 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 
 	scene->forEach<ClusteredMeshNode>([&](ClusteredMeshNode* node){
 
-		// no-op after the first frame
-		node->uploadToGpu();
+		// no-ops after their first call
+		node->initGpu();
+		if(!memoryMapped) node->uploadGeometry();
 
 		dmat4 worldView = view.view * node->transform_global;
 		dmat4 worldViewProj = view.proj * worldView;
 
 		ClusteredMesh mesh;
-		mesh.clusters          = node->gpu_clusters;
-		mesh.positions         = node->gpu_positions;
-		mesh.uvs               = node->gpu_uvs;
-		mesh.triangles         = node->gpu_triangles;
+		if(memoryMapped){
+			mesh.clusters  = (Cluster*)node->mapped_clusters.ptr;
+			mesh.positions = (vec3*)node->mapped_positions.ptr;
+			mesh.uvs       = (vec2*)node->mapped_uvs.ptr;
+			mesh.triangles = (u8*)node->mapped_triangles.ptr;
+		}else{
+			mesh.clusters  = node->gpu_clusters;
+			mesh.positions = node->gpu_positions;
+			mesh.uvs       = node->gpu_uvs;
+			mesh.triangles = node->gpu_triangles;
+		}
 		mesh.texture           = node->gpu_texture;
 		mesh.numClusters       = node->clusters.size();
 		mesh.worldView         = mat4(worldView);
