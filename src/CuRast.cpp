@@ -1,6 +1,7 @@
 #include <unordered_set>
 #include <execution>
 #include <queue>
+#include <atomic>
 
 #include "CuRast.h"
 #include "VKRenderer.h"
@@ -149,27 +150,153 @@ bool canAccessPageableMemory(){
 	return supported;
 }
 
-// Renders PotreeFileNodes directly from their memory-mapped octree.bin. 
+// ------------------------------------------------------------------------------------------------
+// Direct storage: reading octree nodes from file into VRAM via cuFile (GPUDirect Storage)
+// ------------------------------------------------------------------------------------------------
+
+// Reads are aligned to SSD pages, as required for direct transfers from SSD to GPU
+constexpr u64 DIRECT_STORAGE_PAGE_SIZE = 4096;
+
+// Opens the cuFile driver on first use. Without the nvidia-fs kernel module or PCI P2PDMA, 
+// cuFile runs in compatibility mode, i.e., reads go through its pinned host memory bounce buffers.
+bool initCuFile(){
+	static bool initialized = false;
+	static bool success = false;
+
+	if(!initialized){
+		initialized = true;
+
+		CUfileError_t status = cuFileDriverOpen();
+		success = status.err == CU_FILE_SUCCESS;
+
+		if(!success){
+			println("WARNING: cuFileDriverOpen failed (error {}). Direct storage rendering is unavailable.", int(status.err));
+		}
+	}
+
+	return success;
+}
+
+// VRAM buffer that receives the visible octree nodes each frame. 
+// Allocated on first use of the direct storage path, and only grows (e.g. when the point budget increases).
+struct DirectStorageBuffer{
+	u8* ptr = nullptr;
+	u64 size = 0;
+};
+DirectStorageBuffer directStorageBuffer;
+
+void reserveDirectStorageBuffer(u64 requiredSize){
+	if(requiredSize <= directStorageBuffer.size) return;
+
+	// the previous frame is complete (see unmapCudaVk), so nothing uses the old buffer anymore
+	if(directStorageBuffer.ptr != nullptr){
+		cuFileBufDeregister(directStorageBuffer.ptr);
+		MemoryManager::free(directStorageBuffer.ptr);
+	}
+
+	directStorageBuffer.ptr = (u8*)MemoryManager::alloc(requiredSize, "potree direct storage buffer");
+	directStorageBuffer.size = requiredSize;
+
+	// Registering lets cuFile transfer directly into the buffer instead of using internal bounce buffers
+	CUfileError_t status = cuFileBufRegister(directStorageBuffer.ptr, requiredSize, 0);
+	if(status.err != CU_FILE_SUCCESS){
+		println("WARNING: cuFileBufRegister failed (error {}). Direct storage reads may be slower.", int(status.err));
+	}
+}
+
+// A page-aligned read of an octree node (plus padding) from octree.bin to directStorageBuffer
+struct DirectStorageRead{
+	CUfileHandle_t file;
+	u64 fileOffset;    // page-aligned
+	u64 size;          // page-aligned
+	u64 bufferOffset;  // page-aligned
+	u64 requiredSize;  // minimum number of bytes that must be read, i.e., up to the end of the node
+};
+
+// Executes the reads in parallel. cuFileRead() is synchronous, so we issue them from multiple threads. 
+// Returns the number of failed reads.
+int executeDirectStorageReads(const vector<DirectStorageRead>& reads){
+	if(reads.empty()) return 0;
+
+	// throughput of a Samsung 9100 PRO saturated at around 32 threads (~9GB/s)
+	int numThreads = std::min<int>({32, int(std::max(1u, thread::hardware_concurrency())), int(reads.size())});
+
+	std::atomic<int> nextRead = 0;
+	std::atomic<int> numFailed = 0;
+	auto worker = [&](){
+		cudaSetDevice(CURuntime::device);
+
+		for(int i = nextRead++; i < reads.size(); i = nextRead++){
+			const DirectStorageRead& read = reads[i];
+			ssize_t bytesRead = cuFileRead(read.file, directStorageBuffer.ptr, read.size, read.fileOffset, read.bufferOffset);
+
+			// reads may end early at the end of the file, but must cover the node
+			if(bytesRead < ssize_t(read.requiredSize)) numFailed++;
+		}
+	};
+
+	vector<jthread> threads;
+	for(int i = 0; i < numThreads - 1; i++){
+		threads.emplace_back(worker);
+	}
+	worker();
+
+	// wait for all reads to finish
+	threads.clear();
+
+	return numFailed;
+}
+
+// Renders PotreeFileNodes. 
 // - Traverses the octrees of all potree files from largest to smallest nodes in screen space, 
 //   skipping nodes outside the view frustum, until the point budget is reached. 
 // - Points are rendered in a coordinate system centered at the bounding box of each potree file.
-// Requires GPU access to pageable host memory (e.g. HMM on linux).
+// - Render paths (CuRastSettings::potreeRenderPath): 
+//     - Memory-mapped: The kernel reads points from the memory-mapped octree.bin. 
+//       Requires GPU access to pageable host memory (e.g. HMM on linux).
+//     - Direct storage: Visible nodes are read from octree.bin into VRAM via cuFile each frame, 
+//       without caching, and rendered from there.
 void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 
 	u64 pointBudget = CuRastSettings::pointBudget;
+	bool directStorage = CuRastSettings::potreeRenderPath == POTREE_DIRECT_STORAGE;
 
-	if(!canAccessPageableMemory()) return;
+	if(directStorage){
+		if(!initCuFile()) return;
+	}else{
+		if(!canAccessPageableMemory()) return;
+	}
 
 	vector<PotreeFileNode*> files;
 	scene->forEach<PotreeFileNode>([&](PotreeFileNode* file){
-		if(file->mapped_octree == nullptr) return;
+		if(file->mapped_hierarchy == nullptr) return;
 		if(file->hierarchyNodes.empty()) return;
 		if(file->encoding != "DEFAULT") return;
+
+		if(directStorage){
+			if(file->getOctreeCuFileHandle() == nullptr) return;
+		}else{
+			if(file->mapped_octree == nullptr) return;
+		}
 
 		files.push_back(file);
 	});
 
 	if(files.empty()) return;
+
+	if(directStorage){
+		// The buffer holds the visible points, plus padding because reads are aligned to SSD pages. 
+		// Padding adds less than 2 pages per node. We reserve it for pointBudget / 1000 nodes, i.e., 
+		// nodes with 1000 points on average. If a frame needs more, the traversal stops early.
+		i64 maxBytesPerPoint = 0;
+		for(PotreeFileNode* file : files){
+			maxBytesPerPoint = std::max(maxBytesPerPoint, file->bytesPerPoint);
+		}
+
+		u64 maxNodes = std::max<u64>(pointBudget / 1000, 1000);
+		u64 requiredSize = pointBudget * maxBytesPerPoint + maxNodes * 2 * DIRECT_STORAGE_PAGE_SIZE;
+		reserveDirectStorageBuffer(requiredSize);
+	}
 
 	struct Plane{
 		dvec3 normal;
@@ -179,6 +306,7 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 	// per potree file state for the traversal
 	struct FileState{
 		PotreeFileNode* file;
+		CUfileHandle_t cuFileHandle;  // direct storage only
 		dvec3 center;       // bounding box center, becomes the origin of the rendered coordinate system
 		dmat4 worldView;
 		Plane planes[4];    // frustum side planes, relative to center
@@ -189,6 +317,7 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 	for(PotreeFileNode* file : files){
 		FileState state;
 		state.file = file;
+		state.cuFileHandle = directStorage ? file->getOctreeCuFileHandle() : nullptr;
 		state.center = (file->min + file->max) * 0.5;
 		state.worldView = view.view * file->transform_global;
 
@@ -267,6 +396,11 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 	visibleNodes.clear();
 	u64 numVisiblePoints = 0;
 
+	// direct storage: reads of the visible nodes, and the number of bytes they occupy in directStorageBuffer
+	static vector<DirectStorageRead> reads;
+	reads.clear();
+	u64 numReadBytes = 0;
+
 	while(!queue.empty()){
 		QueueItem item = queue.top();
 		queue.pop();
@@ -280,10 +414,32 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 
 		if(numVisiblePoints + node.numPoints > pointBudget) break;
 
+		PotreeNode visibleNode;
+
+		if(directStorage){
+			// read whole SSD pages. The node starts somewhere in the first page.
+			u64 alignedStart = (node.byteOffset / DIRECT_STORAGE_PAGE_SIZE) * DIRECT_STORAGE_PAGE_SIZE;
+			u64 alignedEnd   = ((node.byteOffset + node.byteSize + DIRECT_STORAGE_PAGE_SIZE - 1) / DIRECT_STORAGE_PAGE_SIZE) * DIRECT_STORAGE_PAGE_SIZE;
+			u64 paddedSize   = alignedEnd - alignedStart;
+
+			if(numReadBytes + paddedSize > directStorageBuffer.size) break;
+
+			DirectStorageRead read;
+			read.file         = state.cuFileHandle;
+			read.fileOffset   = alignedStart;
+			read.size         = paddedSize;
+			read.bufferOffset = numReadBytes;
+			read.requiredSize = node.byteOffset + node.byteSize - alignedStart;
+			reads.push_back(read);
+
+			visibleNode.data = directStorageBuffer.ptr + numReadBytes + (node.byteOffset - alignedStart);
+			numReadBytes += paddedSize;
+		}else{
+			visibleNode.data = (u8*)file->mapped_octree + node.byteOffset;
+		}
+
 		numVisiblePoints += node.numPoints;
 
-		PotreeNode visibleNode;
-		visibleNode.data            = (u8*)file->mapped_octree + node.byteOffset;
 		visibleNode.numPoints       = node.numPoints;
 		visibleNode.offset_color    = state.offset_color >= 0 ? state.offset_color : ~0ull;
 		visibleNode.worldView       = mat4(state.worldView);
@@ -306,6 +462,28 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 		}
 	}
 
+	if(directStorage && reads.size() > 0){
+		// load the visible nodes as they are stored in octree.bin; the kernel decodes them
+		double tStart = now();
+		int numFailed = executeDirectStorageReads(reads);
+		double milliseconds = (now() - tStart) * 1000.0;
+
+		if(numFailed > 0){
+			static bool reported = false;
+			if(!reported) println("ERROR: {} of {} direct storage reads failed.", numFailed, reads.size());
+			reported = true;
+		}
+
+		if(Runtime::measureTimings){
+			Runtime::timings.add("cuFileRead (direct storage)", milliseconds);
+		}
+
+		auto& dvlist = Runtime::debugValueList;
+		dvlist.push_back({"direct storage read", format("{:.1f} MB in {:.1f} ms ({:.1f} GB/s)", 
+			double(numReadBytes) / 1'000'000.0, milliseconds, double(numReadBytes) / 1'000'000.0 / milliseconds)});
+		dvlist.push_back({"direct storage buffer", format("{:.1f} MB", double(directStorageBuffer.size) / 1'000'000.0)});
+	}
+
 	if(visibleNodes.size() > 0){
 
 		// upload list of visible nodes
@@ -319,7 +497,11 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 		}
 		cudaMemcpy(nodes, visibleNodes.data(), byteSizeOf(visibleNodes), cudaMemcpyHostToDevice);
 
-		launch_drawPotreeFileNodes(target, nodes, visibleNodes.size());
+		if(directStorage){
+			launch_drawPotreeDirectStorageNodes(target, nodes, visibleNodes.size());
+		}else{
+			launch_drawPotreeFileNodes(target, nodes, visibleNodes.size());
+		}
 	}
 
 	auto& dvlist = Runtime::debugValueList;

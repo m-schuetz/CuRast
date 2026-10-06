@@ -31,6 +31,9 @@ void launch_drawLasPoints(
 // potreeFileRenderer.cu
 void launch_drawPotreeFileNodes(const RenderTarget& target, PotreeNode* nodes, uint64_t numNodes);
 
+// potreeDirectStorageRenderer.cu
+void launch_drawPotreeDirectStorageNodes(const RenderTarget& target, PotreeNode* nodes, uint64_t numNodes);
+
 // List of all kernels, e.g. to inspect their register and shared memory usage.
 // Each .cu file registers its kernels during static initialization.
 struct KernelInfo{

@@ -29,7 +29,8 @@ function(ADD_CUDA TARGET_NAME)
 	MESSAGE(STATUS "CUDAToolkit_NVCC_EXECUTABLE:  " ${CUDAToolkit_NVCC_EXECUTABLE})
 
 	target_include_directories(${TARGET_NAME} PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
-	target_link_libraries(${TARGET_NAME} PRIVATE CUDA::cudart)
+	# cuFile: GPUDirect Storage, used by the direct storage render path for Potree files
+	target_link_libraries(${TARGET_NAME} PRIVATE CUDA::cudart CUDA::cuFile)
 endfunction()
 
 function(ADD_VULKAN TARGET_NAME)

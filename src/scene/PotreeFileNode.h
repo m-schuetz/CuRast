@@ -7,10 +7,13 @@
 #include <fstream>
 #include <filesystem>
 
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <cufile.h>
 
 #include "json/json.hpp"
 
@@ -60,7 +63,8 @@ struct PotreeHierarchyNode{
 };
 
 // Loads a pointcloud converted to the Potree 2.0 format (https://github.com/potree/PotreeConverter),
-// and memory-maps its hierarchy.bin and octree.bin. Linux-only for now.
+// and memory-maps its hierarchy.bin and octree.bin. octree.bin can also be read via cuFile, 
+// for the direct storage render path. Linux-only for now.
 struct PotreeFileNode : public SceneNode{
 
 	string dir = "";
@@ -68,6 +72,11 @@ struct PotreeFileNode : public SceneNode{
 	void* mapped_octree = nullptr;
 	i64 hierarchyFileSize = 0;
 	i64 octreeFileSize = 0;
+
+	// octree.bin, opened for reads via cuFile (GPUDirect Storage) by getOctreeCuFileHandle()
+	int octreeDirectFd = -1;
+	CUfileHandle_t octreeCuFileHandle = nullptr;
+	bool octreeCuFileFailed = false;
 
 	// metadata from metadata.json
 	string version;
@@ -194,6 +203,14 @@ struct PotreeFileNode : public SceneNode{
 	PotreeFileNode& operator=(const PotreeFileNode&) = delete;
 
 	~PotreeFileNode(){
+		if(octreeCuFileHandle != nullptr){
+			cuFileHandleDeregister(octreeCuFileHandle);
+			octreeCuFileHandle = nullptr;
+		}
+		if(octreeDirectFd != -1){
+			::close(octreeDirectFd);
+			octreeDirectFd = -1;
+		}
 		if(mapped_hierarchy != nullptr){
 			munmap(mapped_hierarchy, hierarchyFileSize);
 			mapped_hierarchy = nullptr;
@@ -202,6 +219,44 @@ struct PotreeFileNode : public SceneNode{
 			munmap(mapped_octree, octreeFileSize);
 			mapped_octree = nullptr;
 		}
+	}
+
+	// Opens octree.bin for reads via cuFile on first use. The cuFile driver must already be open.
+	// Returns nullptr if the file can't be used with cuFile.
+	CUfileHandle_t getOctreeCuFileHandle(){
+		if(octreeCuFileHandle != nullptr) return octreeCuFileHandle;
+		if(octreeCuFileFailed) return nullptr;
+
+		string path = dir + "/octree.bin";
+
+		// Direct transfers from the SSD to the GPU require O_DIRECT, i.e., bypassing the page cache. 
+		// If the file system doesn't support it, cuFile can still read via its compatibility mode.
+		octreeDirectFd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
+		if(octreeDirectFd == -1){
+			println("WARNING: failed to open {} with O_DIRECT ({}). Trying without.", path, strerror(errno));
+			octreeDirectFd = ::open(path.c_str(), O_RDONLY);
+		}
+		if(octreeDirectFd == -1){
+			println("ERROR: failed to open {} for direct storage reads: {}", path, strerror(errno));
+			octreeCuFileFailed = true;
+			return nullptr;
+		}
+
+		CUfileDescr_t descr = {};
+		descr.handle.fd = octreeDirectFd;
+		descr.type      = CU_FILE_HANDLE_TYPE_OPAQUE_FD;
+
+		CUfileError_t status = cuFileHandleRegister(&octreeCuFileHandle, &descr);
+		if(status.err != CU_FILE_SUCCESS){
+			println("ERROR: cuFileHandleRegister failed for {} (error {})", path, int(status.err));
+			::close(octreeDirectFd);
+			octreeDirectFd = -1;
+			octreeCuFileHandle = nullptr;
+			octreeCuFileFailed = true;
+			return nullptr;
+		}
+
+		return octreeCuFileHandle;
 	}
 
 	// Expands a proxy node by parsing its hierarchy chunk from the mapped hierarchy.bin. 

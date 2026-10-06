@@ -38,7 +38,7 @@ struct RenderTarget{
 
 
 struct PotreeNode{
-	u8* data; // Pointer to the memory-mapped location of this octree node
+	u8* data; // Pointer to this node's points: in the memory-mapped octree.bin, or in VRAM (direct storage)
 	u64 numPoints;
 	u64 offset_color;      // byte offset of uint16 rgb within a point. Set to >= bytesPerPoint if there is no rgb.
 	mat4 worldView;

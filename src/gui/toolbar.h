@@ -214,6 +214,14 @@ void CuRast::makeToolbar(){
 					CuRastSettings::pointBudget = int64_t(double(pointBudgetM) * 1'000'000.0);
 				}
 				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of points rendered from Potree octrees.");
+
+				ImGui::Text("Potree: ");
+				ImGui::SameLine();
+				ImGui::RadioButton("Memory-mapped##potreeRenderPath", &CuRastSettings::potreeRenderPath, POTREE_MEMORY_MAPPED);
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("The GPU reads points directly from the memory-mapped octree.bin (requires HMM).");
+				ImGui::SameLine();
+				ImGui::RadioButton("Direct Storage##potreeRenderPath", &CuRastSettings::potreeRenderPath, POTREE_DIRECT_STORAGE);
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame, visible nodes are read from octree.bin into VRAM via cuFile (GPUDirect Storage).");
 				
 				endSection();
 			}
