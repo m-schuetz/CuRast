@@ -547,9 +547,10 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 // Selects the clusters of the LOD cut for the current view by traversing the BVH over the groups (nodes.bin) on the CPU,
 // and culls them against the view frustum. Same result as kernel_selectClusters, but only visits nodes and clusters
 // near the cut instead of all clusters. See tools/clodbuilder/README.md.
+// Nodes, groups and clusters are read from RAM or from the memory-mapped files, see ClusteredMeshNode::getBvhData().
 // Returns the number of visited nodes.
 u64 selectClustersBvh(
-	ClusteredMeshNode* node, const ClusteredMesh& mesh, const RenderTarget& target,
+	const ClusteredMeshNode::BvhData& bvh, const ClusteredMesh& mesh, const RenderTarget& target,
 	vector<u32>& visibleClusters, u64& numVisibleTriangles
 ){
 	// same as projectedError() in trianglesClustered.cu
@@ -574,12 +575,12 @@ u64 selectClustersBvh(
 
 	static vector<u32> stack;
 	stack.clear();
-	for(u32 level = 0; level < node->numLevels; level++){
+	for(u32 level = 0; level < bvh.numLevels; level++){
 		stack.push_back(level);
 	}
 
 	while(!stack.empty()){
-		const ClusterBvhNode& bvhNode = node->nodes[stack.back()];
+		const ClusterBvhNode& bvhNode = bvh.nodes[stack.back()];
 		stack.pop_back();
 		numVisitedNodes++;
 
@@ -593,10 +594,10 @@ u64 selectClustersBvh(
 			}
 		}else{
 			// the group's own error is too large, so render each of its clusters that is detailed enough
-			const ClusterGroup& group = node->groups[bvhNode.group];
+			const ClusterGroup& group = bvh.groups[bvhNode.group];
 
 			for(u32 clusterIndex = group.clusterOffset; clusterIndex < group.clusterOffset + group.clusterCount; clusterIndex++){
-				const Cluster& cluster = node->clusters[clusterIndex];
+				const Cluster& cluster = bvh.clusters[clusterIndex];
 
 				if(cluster.refinedGroup >= 0 && projectedError(cluster.lodSphere, cluster.lodError) > threshold) continue;
 				if(isOutsideFrustum(cluster.cullSphere)) continue;
@@ -617,7 +618,8 @@ u64 selectClustersBvh(
 // - kernel_drawClusters rasterizes the selected clusters.
 // - Render paths (CuRastSettings::clusterRenderPath):
 //     - VRAM: Clusters, vertices, triangles and the BC7 texture are copied to VRAM on first use.
-//     - Memory-mapped: The kernels read them directly from the memory-mapped files.
+//       The BVH traversal reads nodes, groups and clusters from RAM.
+//     - Memory-mapped: The kernels read them directly from the memory-mapped files, and so does the BVH traversal.
 //       Requires GPU access to pageable host memory (e.g. HMM on linux).
 void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 
@@ -684,7 +686,7 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 			static vector<u32> visibleClusters;
 			visibleClusters.clear();
 			u64 numTriangles = 0;
-			numVisitedNodes += selectClustersBvh(node, mesh, target, visibleClusters, numTriangles);
+			numVisitedNodes += selectClustersBvh(node->getBvhData(memoryMapped), mesh, target, visibleClusters, numTriangles);
 
 			// the draw kernel expects the same input as produced by kernel_selectClusters
 			u32 counters[2] = {u32(visibleClusters.size()), u32(numTriangles)};

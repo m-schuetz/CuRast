@@ -49,9 +49,10 @@ static_assert(sizeof(ClusterBvhNode) == 32);
 
 // Clustered LOD mesh, as produced by tools/clodbuilder (see tools/clodbuilder/README.md),
 // with its texture converted to a BC7-compressed texture.dds.
-// - The constructor loads all files into RAM, and memory-maps the cluster, vertex, triangle and texture files. Linux-only for now.
-// - Kernels read clusters, vertices, triangles and the texture either from VRAM or from the memory-mapped files,
-//   see CuRastSettings::clusterRenderPath.
+// - The constructor loads all files into RAM, and memory-maps them. Linux-only for now.
+// - With the memory-mapped render path (CuRastSettings::clusterRenderPath), the BVH traversal on the CPU reads nodes,
+//   groups and clusters from the memory-mapped files, and kernels read clusters, vertices, triangles and the texture
+//   from them. Otherwise, the traversal uses the copies in RAM, and kernels the copies in VRAM.
 // - GPU resources are created on first draw, because the CUDA context is not yet available while the scene is set up.
 struct ClusteredMeshNode : public SceneNode{
 
@@ -78,7 +79,9 @@ struct ClusteredMeshNode : public SceneNode{
 	u32 textureHeight = 0;
 	u32 textureLevels = 0;
 
-	// memory-mapped files, with the same content as clusters, positions, uvs, triangles and textureDds
+	// memory-mapped files, with the same content as groups, nodes, clusters, positions, uvs, triangles and textureDds
+	MappedFile mapped_groups;
+	MappedFile mapped_nodes;
 	MappedFile mapped_clusters;
 	MappedFile mapped_positions;
 	MappedFile mapped_uvs;
@@ -127,6 +130,8 @@ struct ClusteredMeshNode : public SceneNode{
 		triangles = readArray<u8>(files["triangles"]);
 
 		// file sizes were already validated by readArray
+		mapped_groups    = mapFile(dir + "/" + files["groups"]["file"].get<string>());
+		mapped_nodes     = mapFile(dir + "/" + files["nodes"]["file"].get<string>());
 		mapped_clusters  = mapFile(dir + "/" + files["clusters"]["file"].get<string>());
 		mapped_positions = mapFile(dir + "/" + files["positions"]["file"].get<string>());
 		mapped_uvs       = mapFile(dir + "/" + files["uvs"]["file"].get<string>());
@@ -172,7 +177,7 @@ struct ClusteredMeshNode : public SceneNode{
 			MemoryManager::free(gpu_counters);
 		}
 
-		for(MappedFile* file : {&mapped_clusters, &mapped_positions, &mapped_uvs, &mapped_triangles, &mapped_texture}){
+		for(MappedFile* file : {&mapped_groups, &mapped_nodes, &mapped_clusters, &mapped_positions, &mapped_uvs, &mapped_triangles, &mapped_texture}){
 			if(file->ptr != nullptr) munmap(file->ptr, file->size);
 			file->ptr = nullptr;
 		}
@@ -207,6 +212,22 @@ struct ClusteredMeshNode : public SceneNode{
 		vramUploaded = true;
 
 		println("uploaded {} to VRAM in {:.1f}s", name, now() - tStart);
+	}
+
+	// What the BVH traversal on the CPU reads, from RAM or from the memory-mapped files
+	struct BvhData{
+		const ClusterBvhNode* nodes;
+		const ClusterGroup* groups;
+		const Cluster* clusters;
+		u32 numLevels;
+	};
+
+	BvhData getBvhData(bool memoryMapped){
+		if(memoryMapped){
+			return {(ClusterBvhNode*)mapped_nodes.ptr, (ClusterGroup*)mapped_groups.ptr, (Cluster*)mapped_clusters.ptr, numLevels};
+		}else{
+			return {nodes.data(), groups.data(), clusters.data(), numLevels};
+		}
 	}
 
 	// The texture's blocks, in VRAM or in the memory-mapped dds file
