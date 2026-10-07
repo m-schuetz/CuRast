@@ -35,9 +35,9 @@ void launch_drawPotreeFileNodes(const RenderTarget& target, PotreeNode* nodes, u
 void launch_drawPotreeDirectStorageNodes(const RenderTarget& target, PotreeNode* nodes, uint64_t numNodes);
 
 // trianglesClustered.cu
-// counters[0]: number of visible clusters, counters[1]: number of their triangles. Must be zero before selection.
-void launch_selectClusters(const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, uint32_t* counters);
-void launch_drawClusters(const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, uint32_t* counters);
+// The counters must be zero before selection.
+void launch_selectClusters(const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, ClusterCounters* counters);
+void launch_drawClusters(const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, ClusterCounters* counters);
 
 // List of all kernels, e.g. to inspect their register and shared memory usage.
 // Each .cu file registers its kernels during static initialization.

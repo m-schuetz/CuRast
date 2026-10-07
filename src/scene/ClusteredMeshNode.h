@@ -57,6 +57,7 @@ static_assert(sizeof(ClusterBvhNode) == 32);
 struct ClusteredMeshNode : public SceneNode{
 
 	struct MappedFile{
+		string name;           // file name, without the directory
 		void* ptr = nullptr;
 		i64 size = 0;
 	};
@@ -97,7 +98,7 @@ struct ClusteredMeshNode : public SceneNode{
 	u8* gpu_triangles = nullptr;
 	u8* gpu_texture = nullptr;           // the blocks of all levels, without the dds header
 	u32* gpu_visibleClusters = nullptr;  // indices of the clusters selected for the current frame
-	u32* gpu_counters = nullptr;         // [0]: number of visible clusters, [1]: number of their triangles
+	ClusterCounters* gpu_counters = nullptr;
 
 	ClusteredMeshNode(string dir, string name) : SceneNode(name){
 		this->dir = dir;
@@ -188,7 +189,7 @@ struct ClusteredMeshNode : public SceneNode{
 		if(gpuInitialized) return;
 
 		gpu_visibleClusters = (u32*)MemoryManager::alloc(clusters.size() * sizeof(u32), name + " visible clusters");
-		gpu_counters        = (u32*)MemoryManager::alloc(2 * sizeof(u32), name + " counters");
+		gpu_counters        = (ClusterCounters*)MemoryManager::alloc(sizeof(ClusterCounters), name + " counters");
 
 		gpuInitialized = true;
 	}
@@ -295,6 +296,7 @@ private:
 
 	static MappedFile mapFile(string path){
 		MappedFile file;
+		file.name = fs::path(path).filename().string();
 
 		int fd = open(path.c_str(), O_RDONLY);
 		if(fd == -1){

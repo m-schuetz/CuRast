@@ -544,14 +544,22 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 	
 }
 
+// What selectClustersBvh() visited and selected
+struct BvhTraversal{
+	u64 visitedNodes = 0;
+	u64 visitedGroups = 0;      // leaves whose clusters were tested
+	u64 testedClusters = 0;
+	u64 visibleTriangles = 0;
+	u64 visibleVertices = 0;
+};
+
 // Selects the clusters of the LOD cut for the current view by traversing the BVH over the groups (nodes.bin) on the CPU,
 // and culls them against the view frustum. Same result as kernel_selectClusters, but only visits nodes and clusters
 // near the cut instead of all clusters. See tools/clodbuilder/README.md.
 // Nodes, groups and clusters are read from RAM or from the memory-mapped files, see ClusteredMeshNode::getBvhData().
-// Returns the number of visited nodes.
-u64 selectClustersBvh(
+BvhTraversal selectClustersBvh(
 	const ClusteredMeshNode::BvhData& bvh, const ClusteredMesh& mesh, const RenderTarget& target,
-	vector<u32>& visibleClusters, u64& numVisibleTriangles
+	vector<u32>& visibleClusters
 ){
 	// same as projectedError() in trianglesClustered.cu
 	float pixelsPerError = target.proj[1][1] * 0.5f * float(target.height);
@@ -571,7 +579,7 @@ u64 selectClustersBvh(
 	};
 
 	float threshold = mesh.lodErrorThreshold;
-	u64 numVisitedNodes = 0;
+	BvhTraversal traversal;
 
 	static vector<u32> stack;
 	stack.clear();
@@ -582,7 +590,7 @@ u64 selectClustersBvh(
 	while(!stack.empty()){
 		const ClusterBvhNode& bvhNode = bvh.nodes[stack.back()];
 		stack.pop_back();
-		numVisitedNodes++;
+		traversal.visitedNodes++;
 
 		// The subtree is detailed enough: its clusters are replaced by coarser ones from another subtree or level
 		if(projectedError(bvhNode.sphere, bvhNode.error) <= threshold) continue;
@@ -595,21 +603,34 @@ u64 selectClustersBvh(
 		}else{
 			// the group's own error is too large, so render each of its clusters that is detailed enough
 			const ClusterGroup& group = bvh.groups[bvhNode.group];
+			traversal.visitedGroups++;
 
 			for(u32 clusterIndex = group.clusterOffset; clusterIndex < group.clusterOffset + group.clusterCount; clusterIndex++){
 				const Cluster& cluster = bvh.clusters[clusterIndex];
+				traversal.testedClusters++;
 
 				if(cluster.refinedGroup >= 0 && projectedError(cluster.lodSphere, cluster.lodError) > threshold) continue;
 				if(isOutsideFrustum(cluster.cullSphere)) continue;
 
 				visibleClusters.push_back(clusterIndex);
-				numVisibleTriangles += cluster.triangleCount;
+				traversal.visibleTriangles += cluster.triangleCount;
+				traversal.visibleVertices += cluster.vertexCount;
 			}
 		}
 	}
 
-	return numVisitedNodes;
+	return traversal;
 }
+
+// Bytes read from a memory-mapped file of clustered meshes in the current frame, shown in the overlay.
+// - Accurate (acc): the sizes of the records and elements that are read, e.g. 112 bytes per cluster and 12 bytes per 
+//   vertex position. Hardware transfers are larger, as memory is accessed in whole cache lines and pages.
+// - Estimate (est): texture.dds, see ClusterCounters::textureTexels. 
+struct MappedFileTraffic{
+	string file;
+	bool accurate;
+	double bytes;
+};
 
 // Renders ClusteredMeshNodes.
 // - Selects the clusters of the LOD cut for the current view, and culls them against the frustum (CuRastSettings::clusterSelection):
@@ -620,7 +641,7 @@ u64 selectClustersBvh(
 //     - VRAM: Clusters, vertices, triangles and the BC7 texture are copied to VRAM on first use.
 //       The BVH traversal reads nodes, groups and clusters from RAM.
 //     - Memory-mapped: The kernels read them directly from the memory-mapped files, and so does the BVH traversal.
-//       Requires GPU access to pageable host memory (e.g. HMM on linux).
+//       Requires GPU access to pageable host memory (e.g. HMM on linux). The overlay shows how much is read from each file.
 void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 
 	bool memoryMapped = CuRastSettings::clusterRenderPath == CLUSTERS_MEMORY_MAPPED;
@@ -633,6 +654,18 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 	u64 numVisitedNodes = 0;
 	double bvhMilliseconds = 0.0;
 	bool hasClusteredMeshes = false;
+
+	vector<MappedFileTraffic> traffic;
+	auto addTraffic = [&](const ClusteredMeshNode::MappedFile& file, double bytes, bool accurate){
+		for(MappedFileTraffic& entry : traffic){
+			if(entry.file == file.name){
+				entry.bytes += bytes;
+				return;
+			}
+		}
+
+		traffic.push_back({file.name, accurate, bytes});
+	};
 
 	scene->forEach<ClusteredMeshNode>([&](ClusteredMeshNode* node){
 
@@ -680,34 +713,50 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 		mesh.frustumPlanes[3] = normalizedPlane(row3 - row1); // Top
 		mesh.frustumPlanes[4] = normalizedPlane(row3 - row2); // Near: clip.z is the near plane distance, i.e., w >= near
 
+		BvhTraversal traversal;
+
 		if(useBvh){
 			double tStart = now();
 
 			static vector<u32> visibleClusters;
 			visibleClusters.clear();
-			u64 numTriangles = 0;
-			numVisitedNodes += selectClustersBvh(node->getBvhData(memoryMapped), mesh, target, visibleClusters, numTriangles);
+			traversal = selectClustersBvh(node->getBvhData(memoryMapped), mesh, target, visibleClusters);
 
 			// the draw kernel expects the same input as produced by kernel_selectClusters
-			u32 counters[2] = {u32(visibleClusters.size()), u32(numTriangles)};
+			ClusterCounters counters = {u32(visibleClusters.size()), u32(traversal.visibleTriangles), u32(traversal.visibleVertices), 0.0f};
 			cudaMemcpy(node->gpu_visibleClusters, visibleClusters.data(), byteSizeOf(visibleClusters), cudaMemcpyHostToDevice);
-			cudaMemcpy(node->gpu_counters, counters, sizeof(counters), cudaMemcpyHostToDevice);
+			cudaMemcpy(node->gpu_counters, &counters, sizeof(counters), cudaMemcpyHostToDevice);
 
 			bvhMilliseconds += (now() - tStart) * 1000.0;
-			numVisibleClusters += visibleClusters.size();
-			numVisibleTriangles += numTriangles;
+			numVisitedNodes += traversal.visitedNodes;
 		}else{
-			cudaMemsetAsync(node->gpu_counters, 0, 2 * sizeof(u32));
+			cudaMemsetAsync(node->gpu_counters, 0, sizeof(ClusterCounters));
 			launch_selectClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
 		}
 
 		launch_drawClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
 
-		if(!useBvh){
-			u32 counters[2];
-			cudaMemcpy(counters, node->gpu_counters, sizeof(counters), cudaMemcpyDeviceToHost);
-			numVisibleClusters += counters[0];
-			numVisibleTriangles += counters[1];
+		ClusterCounters counters;
+		cudaMemcpy(&counters, node->gpu_counters, sizeof(counters), cudaMemcpyDeviceToHost);
+		numVisibleClusters += counters.numVisibleClusters;
+		numVisibleTriangles += counters.numVisibleTriangles;
+
+		if(memoryMapped){
+			// cluster records: those tested by the BVH traversal on the CPU (or all, by kernel_selectClusters), 
+			// plus the visible ones read by kernel_drawClusters
+			u64 clusterRecords = (useBvh ? traversal.testedClusters : mesh.numClusters) + counters.numVisibleClusters;
+
+			addTraffic(node->mapped_nodes, traversal.visitedNodes * sizeof(ClusterBvhNode), true);
+			addTraffic(node->mapped_groups, traversal.visitedGroups * sizeof(ClusterGroup), true);
+			addTraffic(node->mapped_clusters, clusterRecords * sizeof(Cluster), true);
+			addTraffic(node->mapped_positions, counters.numVisibleVertices * sizeof(vec3), true);
+			addTraffic(node->mapped_uvs, counters.numVisibleVertices * sizeof(vec2), true);
+			addTraffic(node->mapped_triangles, counters.numVisibleTriangles * 3, true);
+
+			// BC7: one byte per texel
+			if(mesh.texture.data != nullptr){
+				addTraffic(node->mapped_texture, counters.textureTexels, false);
+			}
 		}
 
 		hasClusteredMeshes = true;
@@ -722,6 +771,10 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 		dvlist.push_back({"clusters", format("{:L}", numVisibleClusters)});
 		dvlist.push_back({"triangles", format("{:L}", numVisibleTriangles)});
 		if(useBvh) dvlist.push_back({"visited BVH nodes", format("{:L}", numVisitedNodes)});
+
+		for(const MappedFileTraffic& entry : traffic){
+			dvlist.push_back({entry.file, format("{:.1f} MB / frame ({})", entry.bytes / 1'000'000.0, entry.accurate ? "acc" : "est")});
+		}
 	}
 }
 

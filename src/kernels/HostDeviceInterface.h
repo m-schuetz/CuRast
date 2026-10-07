@@ -89,6 +89,15 @@ struct BC7Texture{
 	u32 numLevels;
 };
 
+// Per-frame counters of the clustered mesh kernels.
+// Written by kernel_selectClusters (or uploaded after BVH traversal on the CPU), and by kernel_drawClusters.
+struct ClusterCounters{
+	u32 numVisibleClusters;
+	u32 numVisibleTriangles;
+	u32 numVisibleVertices;
+	float textureTexels;     // estimated number of distinct texels that kernel_drawClusters samples
+};
+
 // A ClusteredMeshNode's data in VRAM or memory-mapped files, plus the per-frame parameters for drawing it
 struct ClusteredMesh{
 	Cluster* clusters;
