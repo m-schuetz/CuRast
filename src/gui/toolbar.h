@@ -167,6 +167,14 @@ void CuRast::makeToolbar(){
 				ImGui::SameLine();
 				ImGui::RadioButton("Cluster ID##clusterColor", &CuRastSettings::clusterColorMode, CLUSTER_COLOR_CLUSTER);
 
+				ImGui::Text("Cluster selection: ");
+				ImGui::SameLine();
+				ImGui::RadioButton("BVH (CPU)##clusterSelection", &CuRastSettings::clusterSelection, CLUSTER_SELECTION_BVH);
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("The CPU traverses the BVH over the cluster groups, and uploads the list of selected clusters.");
+				ImGui::SameLine();
+				ImGui::RadioButton("Per cluster (GPU)##clusterSelection", &CuRastSettings::clusterSelection, CLUSTER_SELECTION_PER_CLUSTER);
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("One GPU thread per cluster tests whether it belongs to the LOD cut.");
+
 				// ImGui::SameLine();
 				// string strMeasure;
 				// if(CuRastSettings::measurementCountdown >= 0){

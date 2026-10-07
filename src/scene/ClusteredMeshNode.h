@@ -28,6 +28,26 @@ using std::string;
 using std::vector;
 using std::println;
 
+// Records of groups.bin, see tools/clodbuilder/README.md
+struct ClusterGroup{
+	vec4 sphere;           // xyz: center, w: radius
+	float error;           // FLT_MAX for terminal groups
+	u32 level;
+	u32 clusterOffset;     // first cluster of this group
+	u32 clusterCount;
+};
+static_assert(sizeof(ClusterGroup) == 32);
+
+// Records of nodes.bin: A BVH over the groups, with one tree per level. The root of level i is node i.
+struct ClusterBvhNode{
+	vec4 sphere;           // encloses all groups in this subtree
+	float error;           // maximum error of all groups in this subtree
+	i32 group;             // leaf: index into groups, internal node: -1
+	u32 childOffset;       // internal node: children are nodes[childOffset, childOffset + childCount)
+	u32 childCount;
+};
+static_assert(sizeof(ClusterBvhNode) == 32);
+
 // Clustered LOD mesh, as produced by tools/clodbuilder (see tools/clodbuilder/README.md).
 // - The constructor loads all files into RAM, and memory-maps the cluster, vertex and triangle files. Linux-only for now.
 // - Kernels read clusters, vertices and triangles either from VRAM or from the memory-mapped files,
@@ -43,6 +63,9 @@ struct ClusteredMeshNode : public SceneNode{
 	string dir = "";
 
 	// RAM
+	vector<ClusterGroup> groups;
+	vector<ClusterBvhNode> nodes;
+	u32 numLevels = 0;         // number of BVH roots
 	vector<Cluster> clusters;
 	vector<vec3> positions;
 	vector<vec2> uvs;
@@ -91,6 +114,9 @@ struct ClusteredMeshNode : public SceneNode{
 		}
 
 		const json& files = j["files"];
+		groups    = readArray<ClusterGroup>(files["groups"]);
+		nodes     = readArray<ClusterBvhNode>(files["nodes"]);
+		numLevels = j["counts"]["levels"].get<u32>();
 		clusters  = readArray<Cluster>(files["clusters"]);
 		positions = readArray<vec3>(files["positions"]);
 		uvs       = readArray<vec2>(files["uvs"]);

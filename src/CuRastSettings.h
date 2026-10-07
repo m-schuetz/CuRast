@@ -14,6 +14,12 @@ enum ClusterRenderPath : int {
 	CLUSTERS_MEMORY_MAPPED  = 1, // kernels read from the memory-mapped files (requires HMM)
 };
 
+// How the clusters of the LOD cut are selected each frame
+enum ClusterSelection : int {
+	CLUSTER_SELECTION_BVH         = 0, // the CPU traverses the BVH over the cluster groups (nodes.bin)
+	CLUSTER_SELECTION_PER_CLUSTER = 1, // the GPU tests every cluster
+};
+
 struct CuRastSettings{
 	static inline bool enableEDL = true;
 	static inline bool enableFrustumCulling = true;
@@ -31,6 +37,7 @@ struct CuRastSettings{
 	static inline float lodErrorThreshold = 1.0f;  // clustered LOD: max. projected simplification error, in pixels
 	static inline int clusterColorMode = CLUSTER_COLOR_TEXTURE;
 	static inline int clusterRenderPath = CLUSTERS_VRAM;
+	static inline int clusterSelection = CLUSTER_SELECTION_BVH;
 
 	static inline vec4 background = {1.0f, 1.0f, 1.0f, 1.0f};
 };

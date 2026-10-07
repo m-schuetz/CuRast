@@ -544,8 +544,76 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 	
 }
 
+// Selects the clusters of the LOD cut for the current view by traversing the BVH over the groups (nodes.bin) on the CPU,
+// and culls them against the view frustum. Same result as kernel_selectClusters, but only visits nodes and clusters
+// near the cut instead of all clusters. See tools/clodbuilder/README.md.
+// Returns the number of visited nodes.
+u64 selectClustersBvh(
+	ClusteredMeshNode* node, const ClusteredMesh& mesh, const RenderTarget& target,
+	vector<u32>& visibleClusters, u64& numVisibleTriangles
+){
+	// same as projectedError() in trianglesClustered.cu
+	float pixelsPerError = target.proj[1][1] * 0.5f * float(target.height);
+	auto projectedError = [&](vec4 sphere, float error){
+		float distance = std::max(length(vec3(sphere) - mesh.cameraPosition) - sphere.w, mesh.znear);
+		return error / distance * pixelsPerError;
+	};
+
+	auto isOutsideFrustum = [&](vec4 sphere){
+		if(!mesh.frustumCulling) return false;
+
+		for(vec4 plane : mesh.frustumPlanes){
+			if(dot(vec3(plane), vec3(sphere)) + plane.w < -sphere.w) return true;
+		}
+
+		return false;
+	};
+
+	float threshold = mesh.lodErrorThreshold;
+	u64 numVisitedNodes = 0;
+
+	static vector<u32> stack;
+	stack.clear();
+	for(u32 level = 0; level < node->numLevels; level++){
+		stack.push_back(level);
+	}
+
+	while(!stack.empty()){
+		const ClusterBvhNode& bvhNode = node->nodes[stack.back()];
+		stack.pop_back();
+		numVisitedNodes++;
+
+		// The subtree is detailed enough: its clusters are replaced by coarser ones from another subtree or level
+		if(projectedError(bvhNode.sphere, bvhNode.error) <= threshold) continue;
+		if(isOutsideFrustum(bvhNode.sphere)) continue;
+
+		if(bvhNode.group < 0){
+			for(u32 i = 0; i < bvhNode.childCount; i++){
+				stack.push_back(bvhNode.childOffset + i);
+			}
+		}else{
+			// the group's own error is too large, so render each of its clusters that is detailed enough
+			const ClusterGroup& group = node->groups[bvhNode.group];
+
+			for(u32 clusterIndex = group.clusterOffset; clusterIndex < group.clusterOffset + group.clusterCount; clusterIndex++){
+				const Cluster& cluster = node->clusters[clusterIndex];
+
+				if(cluster.refinedGroup >= 0 && projectedError(cluster.lodSphere, cluster.lodError) > threshold) continue;
+				if(isOutsideFrustum(cluster.cullSphere)) continue;
+
+				visibleClusters.push_back(clusterIndex);
+				numVisibleTriangles += cluster.triangleCount;
+			}
+		}
+	}
+
+	return numVisitedNodes;
+}
+
 // Renders ClusteredMeshNodes.
-// - kernel_selectClusters picks the clusters of the LOD cut for the current view, and culls them against the frustum.
+// - Selects the clusters of the LOD cut for the current view, and culls them against the frustum (CuRastSettings::clusterSelection):
+//     - BVH: selectClustersBvh() traverses the BVH over the groups on the CPU, and uploads the list of selected clusters.
+//     - Per cluster: kernel_selectClusters tests every cluster on the GPU.
 // - kernel_drawClusters rasterizes the selected clusters.
 // - Render paths (CuRastSettings::clusterRenderPath):
 //     - VRAM: Clusters, vertices and triangles are copied to VRAM on first use.
@@ -557,8 +625,12 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 	bool memoryMapped = CuRastSettings::clusterRenderPath == CLUSTERS_MEMORY_MAPPED;
 	if(memoryMapped && !canAccessPageableMemory()) return;
 
+	bool useBvh = CuRastSettings::clusterSelection == CLUSTER_SELECTION_BVH;
+
 	u64 numVisibleClusters = 0;
 	u64 numVisibleTriangles = 0;
+	u64 numVisitedNodes = 0;
+	double bvhMilliseconds = 0.0;
 	bool hasClusteredMeshes = false;
 
 	scene->forEach<ClusteredMeshNode>([&](ClusteredMeshNode* node){
@@ -607,21 +679,48 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 		mesh.frustumPlanes[3] = normalizedPlane(row3 - row1); // Top
 		mesh.frustumPlanes[4] = normalizedPlane(row3 - row2); // Near: clip.z is the near plane distance, i.e., w >= near
 
-		cudaMemsetAsync(node->gpu_counters, 0, 2 * sizeof(u32));
-		launch_selectClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
+		if(useBvh){
+			double tStart = now();
+
+			static vector<u32> visibleClusters;
+			visibleClusters.clear();
+			u64 numTriangles = 0;
+			numVisitedNodes += selectClustersBvh(node, mesh, target, visibleClusters, numTriangles);
+
+			// the draw kernel expects the same input as produced by kernel_selectClusters
+			u32 counters[2] = {u32(visibleClusters.size()), u32(numTriangles)};
+			cudaMemcpy(node->gpu_visibleClusters, visibleClusters.data(), byteSizeOf(visibleClusters), cudaMemcpyHostToDevice);
+			cudaMemcpy(node->gpu_counters, counters, sizeof(counters), cudaMemcpyHostToDevice);
+
+			bvhMilliseconds += (now() - tStart) * 1000.0;
+			numVisibleClusters += visibleClusters.size();
+			numVisibleTriangles += numTriangles;
+		}else{
+			cudaMemsetAsync(node->gpu_counters, 0, 2 * sizeof(u32));
+			launch_selectClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
+		}
+
 		launch_drawClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
 
-		u32 counters[2];
-		cudaMemcpy(counters, node->gpu_counters, sizeof(counters), cudaMemcpyDeviceToHost);
-		numVisibleClusters += counters[0];
-		numVisibleTriangles += counters[1];
+		if(!useBvh){
+			u32 counters[2];
+			cudaMemcpy(counters, node->gpu_counters, sizeof(counters), cudaMemcpyDeviceToHost);
+			numVisibleClusters += counters[0];
+			numVisibleTriangles += counters[1];
+		}
+
 		hasClusteredMeshes = true;
 	});
+
+	if(useBvh && hasClusteredMeshes && Runtime::measureTimings){
+		Runtime::timings.add("cluster BVH traversal and upload (CPU)", bvhMilliseconds);
+	}
 
 	if(hasClusteredMeshes){
 		auto& dvlist = Runtime::debugValueList;
 		dvlist.push_back({"clusters", format("{:L}", numVisibleClusters)});
 		dvlist.push_back({"triangles", format("{:L}", numVisibleTriangles)});
+		if(useBvh) dvlist.push_back({"visited BVH nodes", format("{:L}", numVisitedNodes)});
 	}
 }
 
