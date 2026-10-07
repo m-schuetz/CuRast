@@ -80,13 +80,22 @@ enum ClusterColorMode : int {
 	CLUSTER_COLOR_CLUSTER = 2, // random color per cluster
 };
 
-// A ClusteredMeshNode's data in VRAM, plus the per-frame parameters for drawing it
+// BC7-compressed texture with mip levels, laid out as in a dds file:
+// the blocks of each level row by row, starting with the largest level. Decoded in the kernel, see bc7.cuh.
+struct BC7Texture{
+	u8* data;                // first block of the largest level, nullptr if there is no texture. 4 byte aligned.
+	u32 width;
+	u32 height;
+	u32 numLevels;
+};
+
+// A ClusteredMeshNode's data in VRAM or memory-mapped files, plus the per-frame parameters for drawing it
 struct ClusteredMesh{
 	Cluster* clusters;
 	vec3* positions;
 	vec2* uvs;
 	u8* triangles;           // 3 cluster-local vertex indices per triangle
-	u64 texture;             // cudaTextureObject_t, 0 if the mesh has no texture
+	BC7Texture texture;
 	u32 numClusters;
 
 	mat4 worldView;

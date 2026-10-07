@@ -2,7 +2,7 @@
 
 #include <string>
 #include <vector>
-#include <cmath>
+#include <cstring>
 #include <print>
 #include <fstream>
 #include <filesystem>
@@ -15,7 +15,6 @@
 #include <cuda_runtime.h>
 
 #include "json/json.hpp"
-#include "stb/stb_image.h"
 
 #include "SceneNode.h"
 #include "types.h"
@@ -48,10 +47,11 @@ struct ClusterBvhNode{
 };
 static_assert(sizeof(ClusterBvhNode) == 32);
 
-// Clustered LOD mesh, as produced by tools/clodbuilder (see tools/clodbuilder/README.md).
-// - The constructor loads all files into RAM, and memory-maps the cluster, vertex and triangle files. Linux-only for now.
-// - Kernels read clusters, vertices and triangles either from VRAM or from the memory-mapped files,
-//   see CuRastSettings::clusterRenderPath. The texture is always in VRAM.
+// Clustered LOD mesh, as produced by tools/clodbuilder (see tools/clodbuilder/README.md),
+// with its texture converted to a BC7-compressed texture.dds.
+// - The constructor loads all files into RAM, and memory-maps the cluster, vertex, triangle and texture files. Linux-only for now.
+// - Kernels read clusters, vertices, triangles and the texture either from VRAM or from the memory-mapped files,
+//   see CuRastSettings::clusterRenderPath.
 // - GPU resources are created on first draw, because the CUDA context is not yet available while the scene is set up.
 struct ClusteredMeshNode : public SceneNode{
 
@@ -70,25 +70,29 @@ struct ClusteredMeshNode : public SceneNode{
 	vector<vec3> positions;
 	vector<vec2> uvs;
 	vector<u8> triangles;      // 3 cluster-local vertex indices per triangle
-	vector<u8> textureRGBA;    // decoded base color texture, empty if there is none
-	int textureWidth = 0;
-	int textureHeight = 0;
 
-	// memory-mapped files, with the same content as clusters, positions, uvs and triangles
+	// BC7-compressed texture with mip levels. Empty if there is none.
+	vector<u8> textureDds;     // the whole dds file
+	u64 textureDataOffset = 0; // the blocks of all levels start here
+	u32 textureWidth = 0;
+	u32 textureHeight = 0;
+	u32 textureLevels = 0;
+
+	// memory-mapped files, with the same content as clusters, positions, uvs, triangles and textureDds
 	MappedFile mapped_clusters;
 	MappedFile mapped_positions;
 	MappedFile mapped_uvs;
 	MappedFile mapped_triangles;
+	MappedFile mapped_texture;
 
 	// VRAM
-	bool gpuInitialized = false;     // per-frame buffers and texture, see initGpu()
-	bool geometryUploaded = false;   // clusters, vertices and triangles, see uploadGeometry()
+	bool gpuInitialized = false;     // per-frame buffers, see initGpu()
+	bool vramUploaded = false;       // see uploadToVram()
 	Cluster* gpu_clusters = nullptr;
 	vec3* gpu_positions = nullptr;
 	vec2* gpu_uvs = nullptr;
 	u8* gpu_triangles = nullptr;
-	cudaMipmappedArray_t gpu_textureArray = nullptr;
-	cudaTextureObject_t gpu_texture = 0;
+	u8* gpu_texture = nullptr;           // the blocks of all levels, without the dds header
 	u32* gpu_visibleClusters = nullptr;  // indices of the clusters selected for the current frame
 	u32* gpu_counters = nullptr;         // [0]: number of visible clusters, [1]: number of their triangles
 
@@ -134,22 +138,20 @@ struct ClusteredMeshNode : public SceneNode{
 		aabb.min = toVec3(j["boundingBox"]["min"]);
 		aabb.max = toVec3(j["boundingBox"]["max"]);
 
+		// clodbuilder writes the source's texture as is, e.g. texture.jpg. We use its BC7-compressed version, texture.dds.
 		if(j.contains("texture")){
-			string texturePath = dir + "/" + j["texture"]["file"].get<string>();
+			fs::path texturePath = fs::path(dir) / j["texture"]["file"].get<string>();
+			texturePath.replace_extension(".dds");
 
-			int numChannels;
-			u8* data = stbi_load(texturePath.c_str(), &textureWidth, &textureHeight, &numChannels, 4);
-			if(data == nullptr){
-				println("ERROR: failed to load texture {}: {}", texturePath, stbi_failure_reason());
-				exit(7234563);
+			if(fs::exists(texturePath)){
+				loadTexture(texturePath.string());
+			}else{
+				println("WARNING: {} not found, rendering without texture. See tools/clodbuilder/README.md on how to create it.", texturePath.string());
 			}
-
-			textureRGBA.assign(data, data + u64(textureWidth) * u64(textureHeight) * 4);
-			stbi_image_free(data);
 		}
 
-		println("loaded {} clusters, {} triangles, {}x{} texture from {} in {:.1f}s",
-			clusters.size(), triangles.size() / 3, textureWidth, textureHeight, dir, now() - tStart);
+		println("loaded {} clusters, {} triangles, {}x{} texture with {} levels from {} in {:.1f}s",
+			clusters.size(), triangles.size() / 3, textureWidth, textureHeight, textureLevels, dir, now() - tStart);
 	}
 
 	// owns the GPU resources and the mappings
@@ -157,59 +159,118 @@ struct ClusteredMeshNode : public SceneNode{
 	ClusteredMeshNode& operator=(const ClusteredMeshNode&) = delete;
 
 	~ClusteredMeshNode(){
-		if(geometryUploaded){
+		if(vramUploaded){
 			MemoryManager::free(gpu_clusters);
 			MemoryManager::free(gpu_positions);
 			MemoryManager::free(gpu_uvs);
 			MemoryManager::free(gpu_triangles);
+			if(gpu_texture != nullptr) MemoryManager::free(gpu_texture);
 		}
 
 		if(gpuInitialized){
 			MemoryManager::free(gpu_visibleClusters);
 			MemoryManager::free(gpu_counters);
-
-			if(gpu_texture != 0) cudaDestroyTextureObject(gpu_texture);
-			if(gpu_textureArray != nullptr) cudaFreeMipmappedArray(gpu_textureArray);
 		}
 
-		for(MappedFile* file : {&mapped_clusters, &mapped_positions, &mapped_uvs, &mapped_triangles}){
+		for(MappedFile* file : {&mapped_clusters, &mapped_positions, &mapped_uvs, &mapped_triangles, &mapped_texture}){
 			if(file->ptr != nullptr) munmap(file->ptr, file->size);
 			file->ptr = nullptr;
 		}
 	}
 
-	// Allocates the per-frame buffers and uploads the texture. Needed by both render paths.
+	// Allocates the per-frame buffers. Needed by both render paths.
 	void initGpu(){
 		if(gpuInitialized) return;
 
 		gpu_visibleClusters = (u32*)MemoryManager::alloc(clusters.size() * sizeof(u32), name + " visible clusters");
 		gpu_counters        = (u32*)MemoryManager::alloc(2 * sizeof(u32), name + " counters");
 
-		if(!textureRGBA.empty()){
-			uploadTexture();
-		}
-
 		gpuInitialized = true;
 	}
 
-	// Copies clusters, vertices and triangles to VRAM, for the VRAM render path.
+	// Copies clusters, vertices, triangles and the texture's blocks to VRAM, for the VRAM render path.
 	// They stay in VRAM when switching to the memory-mapped render path.
-	void uploadGeometry(){
-		if(geometryUploaded) return;
+	void uploadToVram(){
+		if(vramUploaded) return;
 
 		double tStart = now();
 
-		gpu_clusters  = (Cluster*)upload(clusters, name + " clusters");
-		gpu_positions = (vec3*)upload(positions, name + " positions");
-		gpu_uvs       = (vec2*)upload(uvs, name + " uvs");
-		gpu_triangles = (u8*)upload(triangles, name + " triangles");
+		gpu_clusters  = (Cluster*)upload(clusters.data(), byteSizeOf(clusters), name + " clusters");
+		gpu_positions = (vec3*)upload(positions.data(), byteSizeOf(positions), name + " positions");
+		gpu_uvs       = (vec2*)upload(uvs.data(), byteSizeOf(uvs), name + " uvs");
+		gpu_triangles = (u8*)upload(triangles.data(), byteSizeOf(triangles), name + " triangles");
 
-		geometryUploaded = true;
+		if(!textureDds.empty()){
+			gpu_texture = (u8*)upload(textureDds.data() + textureDataOffset, textureDds.size() - textureDataOffset, name + " texture (BC7)");
+		}
+
+		vramUploaded = true;
 
 		println("uploaded {} to VRAM in {:.1f}s", name, now() - tStart);
 	}
 
+	// The texture's blocks, in VRAM or in the memory-mapped dds file
+	BC7Texture getTexture(bool memoryMapped){
+		BC7Texture texture = {};
+		if(textureDds.empty()) return texture;
+
+		texture.data      = memoryMapped ? (u8*)mapped_texture.ptr + textureDataOffset : gpu_texture;
+		texture.width     = textureWidth;
+		texture.height    = textureHeight;
+		texture.numLevels = textureLevels;
+
+		return texture;
+	}
+
 private:
+
+	// Loads a dds file with a BC7-compressed 2D texture into RAM, and memory-maps it
+	void loadTexture(string path){
+		std::ifstream stream(path, std::ios::binary);
+		textureDds.resize(fs::file_size(path));
+		stream.read((char*)textureDds.data(), textureDds.size());
+
+		auto read32 = [&](u64 offset){
+			u32 value;
+			memcpy(&value, &textureDds[offset], 4);
+			return value;
+		};
+
+		// "DDS", the 124 byte header, and the 20 byte DX10 header with the format.
+		// 98 and 99: DXGI_FORMAT_BC7_UNORM and DXGI_FORMAT_BC7_UNORM_SRGB, 3: 2D texture.
+		bool isBC7 = stream
+			&& textureDds.size() >= 148
+			&& memcmp(&textureDds[0], "DDS ", 4) == 0
+			&& memcmp(&textureDds[84], "DX10", 4) == 0
+			&& (read32(128) == 98 || read32(128) == 99)
+			&& read32(132) == 3
+			&& read32(140) == 1;
+
+		if(!isBC7){
+			println("ERROR: {} is not a BC7-compressed 2D texture", path);
+			exit(7234569);
+		}
+
+		textureHeight     = read32(12);
+		textureWidth      = read32(16);
+		textureLevels     = std::max(read32(28), 1u);
+		textureDataOffset = 148;
+
+		// levels are stored one after another, starting with the largest
+		u64 dataSize = 0;
+		for(u32 level = 0; level < textureLevels && level < 32; level++){
+			u64 levelWidth  = std::max(textureWidth >> level, 1u);
+			u64 levelHeight = std::max(textureHeight >> level, 1u);
+			dataSize += 16 * ((levelWidth + 3) / 4) * ((levelHeight + 3) / 4);
+		}
+
+		if(textureLevels > 32 || textureDataOffset + dataSize > textureDds.size()){
+			println("ERROR: {} is smaller than its {}x{} texture with {} levels", path, textureWidth, textureHeight, textureLevels);
+			exit(7234570);
+		}
+
+		mapped_texture = mapFile(path);
+	}
 
 	static MappedFile mapFile(string path){
 		MappedFile file;
@@ -270,78 +331,11 @@ private:
 		return data;
 	}
 
-	template<typename T>
-	static void* upload(const vector<T>& data, string label){
-		void* ptr = MemoryManager::alloc(byteSizeOf(data), label);
-		CURuntime::assertCudaSuccess(cudaMemcpy(ptr, data.data(), byteSizeOf(data), cudaMemcpyHostToDevice));
+	static void* upload(const void* data, u64 size, string label){
+		void* ptr = MemoryManager::alloc(size, label);
+		CURuntime::assertCudaSuccess(cudaMemcpy(ptr, data, size, cudaMemcpyHostToDevice));
 
 		return ptr;
-	}
-
-	// Uploads the texture with a full mip chain, so that minified textures don't alias
-	void uploadTexture(){
-		int numLevels = 1 + int(std::floor(std::log2(double(std::max(textureWidth, textureHeight)))));
-
-		cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<uchar4>();
-		cudaExtent extent = make_cudaExtent(textureWidth, textureHeight, 0);
-		CURuntime::assertCudaSuccess(cudaMallocMipmappedArray(&gpu_textureArray, &channelDesc, extent, numLevels));
-
-		const u8* levelData = textureRGBA.data();
-		vector<u8> nextLevel;
-		vector<u8> currentLevel;
-		int levelWidth = textureWidth;
-		int levelHeight = textureHeight;
-
-		for(int level = 0; level < numLevels; level++){
-			cudaArray_t levelArray;
-			CURuntime::assertCudaSuccess(cudaGetMipmappedArrayLevel(&levelArray, gpu_textureArray, level));
-			CURuntime::assertCudaSuccess(cudaMemcpy2DToArray(
-				levelArray, 0, 0, levelData, levelWidth * 4, levelWidth * 4, levelHeight, cudaMemcpyHostToDevice));
-
-			if(level + 1 == numLevels) break;
-
-			// next level: average of 2x2 texels
-			int nextWidth = std::max(1, levelWidth / 2);
-			int nextHeight = std::max(1, levelHeight / 2);
-			nextLevel.resize(u64(nextWidth) * u64(nextHeight) * 4);
-
-			for(int y = 0; y < nextHeight; y++)
-			for(int x = 0; x < nextWidth; x++)
-			for(int c = 0; c < 4; c++){
-				int x0 = std::min(2 * x, levelWidth - 1);
-				int x1 = std::min(2 * x + 1, levelWidth - 1);
-				int y0 = std::min(2 * y, levelHeight - 1);
-				int y1 = std::min(2 * y + 1, levelHeight - 1);
-
-				u32 sum = levelData[4 * (u64(y0) * levelWidth + x0) + c]
-				        + levelData[4 * (u64(y0) * levelWidth + x1) + c]
-				        + levelData[4 * (u64(y1) * levelWidth + x0) + c]
-				        + levelData[4 * (u64(y1) * levelWidth + x1) + c];
-
-				nextLevel[4 * (u64(y) * nextWidth + x) + c] = (sum + 2) / 4;
-			}
-
-			std::swap(currentLevel, nextLevel);
-			levelData = currentLevel.data();
-			levelWidth = nextWidth;
-			levelHeight = nextHeight;
-		}
-
-		cudaResourceDesc resourceDesc = {};
-		resourceDesc.resType = cudaResourceTypeMipmappedArray;
-		resourceDesc.res.mipmap.mipmap = gpu_textureArray;
-
-		// clamp to edge, as in the glTF sampler of the source mesh
-		cudaTextureDesc textureDesc = {};
-		textureDesc.addressMode[0]      = cudaAddressModeClamp;
-		textureDesc.addressMode[1]      = cudaAddressModeClamp;
-		textureDesc.filterMode          = cudaFilterModeLinear;
-		textureDesc.mipmapFilterMode    = cudaFilterModeLinear;
-		textureDesc.readMode            = cudaReadModeNormalizedFloat;
-		textureDesc.normalizedCoords    = 1;
-		textureDesc.maxMipmapLevelClamp = float(numLevels - 1);
-
-		CURuntime::assertCudaSuccess(cudaCreateTextureObject(&gpu_texture, &resourceDesc, &textureDesc, nullptr));
 	}
 
 };

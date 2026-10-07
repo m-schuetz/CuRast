@@ -14,6 +14,12 @@ cmake --build tools/clodbuilder/build -j
 ./tools/clodbuilder/build/clodbuilder <input.glb> <outputDir>
 ```
 
+CuRast reads the texture from a BC7-compressed `texture.dds` with mip levels. Convert the `texture.jpg` that clodbuilder writes with [AMD Compressonator](https://github.com/GPUOpen-Tools/compressonator/releases) (V4.5.52, CLI for Linux). Let the levels end at 4x4: Compressonator V4.5.52 encodes the 2x2 level incorrectly (half of its texels are black). For an 8192x8192 texture, that's 12 levels:
+
+```
+compressonatorcli -fd BC7 -miplevels 12 -NumThreads 32 <outputDir>/texture.jpg <outputDir>/texture.dds
+```
+
 ## Settings
 
 `clodDefaultConfig(128)`, meshoptimizer's default for rasterization: at most 128 triangles and 128 vertices per cluster, groups of about 16 clusters, each level aims to halve the triangle count. Two settings differ from the defaults:
@@ -37,6 +43,7 @@ All values are little-endian. Clusters are stored in the order clodBuild produce
 | `uvs.bin` | `float u, v` per vertex, glTF convention: (0, 0) is the top-left corner of the texture |
 | `triangles.bin` | `uint8 i0, i1, i2` per triangle, indices relative to the cluster's `vertexOffset` |
 | `texture.jpg` | The source's base color texture, copied as is |
+| `texture.dds` | Not written by clodbuilder: The texture, BC7-compressed with mip levels (see above) |
 
 ```cpp
 struct Cluster{                 // 112 bytes

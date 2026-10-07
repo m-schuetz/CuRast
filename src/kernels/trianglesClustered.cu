@@ -5,8 +5,10 @@
 // 2. kernel_drawClusters: One block per visible cluster. Transforms the cluster's vertices into shared memory,
 //    then rasterizes its triangles. Small triangles are rasterized by one thread each, larger ones by the whole block.
 //
+// The texture is BC7-compressed and decoded here (see bc7.cuh), so it can be read from VRAM or from a memory-mapped file.
+//
 // Limitations: Triangles that cross the near plane are discarded instead of clipped.
-// The texture's mip level is selected once per triangle.
+// The texture's mip level is selected once per triangle, and sampled bilinearly without blending between levels.
 
 #include <cstdint>
 #include <cstdio>
@@ -34,6 +36,7 @@ namespace cg = cooperative_groups;
 #include "../types.h"
 #include "./kernels.h"
 #include "../Timer.h"
+#include "./bc7.cuh"
 
 using glm::ivec2;
 using glm::vec4;
@@ -105,9 +108,56 @@ struct Triangle{
 	float invW0, invW1, invW2;     // 1 / view-space depth
 	vec2 uv0, uv1, uv2;
 	float invArea;
-	vec2 dUVdx, dUVdy;             // for mip level selection
+	float textureLevel;            // mip level, from the size of a pixel in texels
 	int minX, minY, maxX, maxY;    // pixel bounding box, clamped to the render target
 };
+
+// RGBA8 texel of a mip level, clamp to edge
+__device__ u32 fetchTexel(const u8* levelData, u32 levelWidth, u32 levelHeight, int x, int y){
+	x = glm::clamp(x, 0, int(levelWidth) - 1);
+	y = glm::clamp(y, 0, int(levelHeight) - 1);
+
+	u32 blocksPerRow = (levelWidth + 3) / 4;
+	const u8* block = levelData + 16 * ((y / 4) * blocksPerRow + x / 4);
+
+	return decodeBC7Texel(block, (y % 4) * 4 + (x % 4));
+}
+
+__device__ vec4 unpackColor(u32 color){
+	return vec4(color & 0xff, (color >> 8) & 0xff, (color >> 16) & 0xff, color >> 24);
+}
+
+// Bilinear sample of the mip level closest to <level>. Returns RGBA in 0 to 255.
+__device__ vec4 sampleTexture(const BC7Texture& texture, vec2 uv, float level){
+	u32 levelIndex = min(u32(level + 0.5f), texture.numLevels - 1);
+
+	// levels are stored one after another, starting with the largest
+	const u8* levelData = texture.data;
+	u32 levelWidth = texture.width;
+	u32 levelHeight = texture.height;
+	for(u32 i = 0; i < levelIndex; i++){
+		levelData += 16ull * ((levelWidth + 3) / 4) * ((levelHeight + 3) / 4);
+		levelWidth = max(levelWidth / 2, 1u);
+		levelHeight = max(levelHeight / 2, 1u);
+	}
+
+	// clamp before converting to int, uvs of thin triangles can be far outside of [0, 1]
+	float x = glm::clamp(uv.x * float(levelWidth) - 0.5f, -1.0f, float(levelWidth));
+	float y = glm::clamp(uv.y * float(levelHeight) - 0.5f, -1.0f, float(levelHeight));
+	float x0 = floorf(x);
+	float y0 = floorf(y);
+	float fx = x - x0;
+	float fy = y - y0;
+	int ix = int(x0);
+	int iy = int(y0);
+
+	vec4 c00 = unpackColor(fetchTexel(levelData, levelWidth, levelHeight, ix + 0, iy + 0));
+	vec4 c10 = unpackColor(fetchTexel(levelData, levelWidth, levelHeight, ix + 1, iy + 0));
+	vec4 c01 = unpackColor(fetchTexel(levelData, levelWidth, levelHeight, ix + 0, iy + 1));
+	vec4 c11 = unpackColor(fetchTexel(levelData, levelWidth, levelHeight, ix + 1, iy + 1));
+
+	return glm::mix(glm::mix(c00, c10, fx), glm::mix(c01, c11, fx), fy);
+}
 
 __device__ float edgeFunction(vec2 a, vec2 b, vec2 p){
 	return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
@@ -157,12 +207,15 @@ __device__ bool setupTriangle(
 	t.uv1 = {uvs[indices[1]].x, uvs[indices[1]].y};
 	t.uv2 = {uvs[indices[2]].x, uvs[indices[2]].y};
 
-	// screen-space derivatives of the (affinely interpolated) uvs
+	// mip level from the screen-space derivatives of the (affinely interpolated) uvs, in texels
+	vec2 textureSize = {float(mesh.texture.width), float(mesh.texture.height)};
 	vec2 dw0 = vec2(-(t.p2.y - t.p1.y), t.p2.x - t.p1.x) * t.invArea;
 	vec2 dw1 = vec2(-(t.p0.y - t.p2.y), t.p0.x - t.p2.x) * t.invArea;
 	vec2 dw2 = vec2(-(t.p1.y - t.p0.y), t.p1.x - t.p0.x) * t.invArea;
-	t.dUVdx = t.uv0 * dw0.x + t.uv1 * dw1.x + t.uv2 * dw2.x;
-	t.dUVdy = t.uv0 * dw0.y + t.uv1 * dw1.y + t.uv2 * dw2.y;
+	vec2 dTexelsdx = (t.uv0 * dw0.x + t.uv1 * dw1.x + t.uv2 * dw2.x) * textureSize;
+	vec2 dTexelsdy = (t.uv0 * dw0.y + t.uv1 * dw1.y + t.uv2 * dw2.y) * textureSize;
+	float texelsPerPixel = max(length(dTexelsdx), length(dTexelsdy));
+	t.textureLevel = max(log2f(texelsPerPixel), 0.0f);
 
 	return true;
 }
@@ -188,16 +241,13 @@ __device__ void drawPixel(const Triangle& t, int x, int y, u32 flatColor, const 
 	if(udepth > (target.colorbuffer[pixelID] >> 32)) return;
 
 	u32 color = flatColor;
-	if(mesh.colorMode == CLUSTER_COLOR_TEXTURE && mesh.texture != 0){
+	if(mesh.colorMode == CLUSTER_COLOR_TEXTURE && mesh.texture.data != nullptr){
 		vec2 uv = (w0 * t.invW0 * t.uv0 + w1 * t.invW1 * t.uv1 + w2 * t.invW2 * t.uv2) / invW;
+		vec4 texel = sampleTexture(mesh.texture, uv, t.textureLevel);
 
-		float4 texel = tex2DGrad<float4>(mesh.texture, uv.x, uv.y,
-			make_float2(t.dUVdx.x, t.dUVdx.y),
-			make_float2(t.dUVdy.x, t.dUVdy.y));
-
-		color = u32(texel.x * 255.0f)
-			| (u32(texel.y * 255.0f) << 8)
-			| (u32(texel.z * 255.0f) << 16)
+		color = u32(texel.r + 0.5f)
+			| (u32(texel.g + 0.5f) << 8)
+			| (u32(texel.b + 0.5f) << 16)
 			| (0xffu << 24);
 	}
 

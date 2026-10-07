@@ -248,10 +248,10 @@ void CuRast::makeToolbar(){
 				ImGui::Text("   Cluster data: ");
 				ImGui::SameLine();
 				ImGui::RadioButton("VRAM##clusterRenderPath", &CuRastSettings::clusterRenderPath, CLUSTERS_VRAM);
-				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Clusters, vertices and triangles are copied to VRAM on first use.");
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Clusters, vertices, triangles and the BC7 texture are copied to VRAM on first use.");
 				ImGui::SameLine();
 				ImGui::RadioButton("Memory-mapped##clusterRenderPath", &CuRastSettings::clusterRenderPath, CLUSTERS_MEMORY_MAPPED);
-				if(ImGui::IsItemHovered()) ImGui::SetTooltip("The GPU reads clusters, vertices and triangles directly from the memory-mapped files (requires HMM). The texture stays in VRAM.");
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("The GPU reads clusters, vertices, triangles and the BC7 texture directly from the memory-mapped files (requires HMM).");
 				
 				endSection();
 			}

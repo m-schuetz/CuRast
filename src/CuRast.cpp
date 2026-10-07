@@ -616,10 +616,9 @@ u64 selectClustersBvh(
 //     - Per cluster: kernel_selectClusters tests every cluster on the GPU.
 // - kernel_drawClusters rasterizes the selected clusters.
 // - Render paths (CuRastSettings::clusterRenderPath):
-//     - VRAM: Clusters, vertices and triangles are copied to VRAM on first use.
+//     - VRAM: Clusters, vertices, triangles and the BC7 texture are copied to VRAM on first use.
 //     - Memory-mapped: The kernels read them directly from the memory-mapped files.
 //       Requires GPU access to pageable host memory (e.g. HMM on linux).
-//   The texture is in VRAM in both cases.
 void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 
 	bool memoryMapped = CuRastSettings::clusterRenderPath == CLUSTERS_MEMORY_MAPPED;
@@ -637,7 +636,7 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 
 		// no-ops after their first call
 		node->initGpu();
-		if(!memoryMapped) node->uploadGeometry();
+		if(!memoryMapped) node->uploadToVram();
 
 		dmat4 worldView = view.view * node->transform_global;
 		dmat4 worldViewProj = view.proj * worldView;
@@ -654,7 +653,7 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 			mesh.uvs       = node->gpu_uvs;
 			mesh.triangles = node->gpu_triangles;
 		}
-		mesh.texture           = node->gpu_texture;
+		mesh.texture           = node->getTexture(memoryMapped);
 		mesh.numClusters       = node->clusters.size();
 		mesh.worldView         = mat4(worldView);
 		mesh.cameraPosition    = vec3(inverse(worldView) * dvec4(0.0, 0.0, 0.0, 1.0));
