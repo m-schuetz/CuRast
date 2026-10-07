@@ -143,10 +143,10 @@ struct ClusteredMeshNode : public SceneNode{
 		aabb.min = toVec3(j["boundingBox"]["min"]);
 		aabb.max = toVec3(j["boundingBox"]["max"]);
 
-		// clodbuilder writes the source's texture as is, e.g. texture.jpg. We use its BC7-compressed version, texture.dds.
+		// clodbuilder writes the source's textures as they are. We use texture.dds, the BC7-compressed version
+		// (or atlas, if there are multiple textures) created by tools/clodbuilder/convert_textures.py.
 		if(j.contains("texture")){
-			fs::path texturePath = fs::path(dir) / j["texture"]["file"].get<string>();
-			texturePath.replace_extension(".dds");
+			fs::path texturePath = fs::path(dir) / "texture.dds";
 
 			if(fs::exists(texturePath)){
 				loadTexture(texturePath.string());

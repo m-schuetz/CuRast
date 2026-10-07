@@ -68,7 +68,7 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds or meshes 
     - VRAM: Copied to VRAM on first use.
     - Memory-mapped: The GPU reads them directly from the memory-mapped files.
 
-  The texture is read from texture.dds, a BC7-compressed version of the texture.jpg written by clodbuilder (see [tools/clodbuilder](tools/clodbuilder/README.md)). It is decoded in the kernel, so that it can be read from VRAM or from the memory-mapped file.
+  The texture is read from texture.dds, which `tools/clodbuilder/convert_textures.py` creates from the textures written by clodbuilder: BC7-compressed, and combined into an atlas if there are multiple textures (see [tools/clodbuilder](tools/clodbuilder/README.md)). It is decoded in the kernel, so that it can be read from VRAM or from the memory-mapped file.
 
 ### Program
 

@@ -5,10 +5,12 @@
 //
 // Usage: clodbuilder <input.glb> <outputDir>
 
+#include <algorithm>
 #include <cassert>
 #include <cfloat>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -63,12 +65,22 @@ static_assert(sizeof(Group) == 32);
 // clodNode is written as is to nodes.bin
 static_assert(sizeof(clodNode) == 32);
 
+struct InputImage{
+	vector<uint8_t> data;       // encoded, as embedded in the GLB
+	string mimeType;
+};
+
+// All primitives of the GLB's mesh, merged into one mesh
 struct InputMesh{
 	vector<float> positions;    // xyz per vertex
 	vector<float> uvs;          // uv per vertex
 	vector<uint32_t> indices;
-	vector<uint8_t> image;      // encoded base color texture, empty if there is none
-	string imageMimeType;
+
+	// Base color textures, empty if there are none. Multiple textures are the tiles of an atlas with
+	// atlasColumns x atlasRows tiles, row by row. The uvs are already remapped to the atlas.
+	vector<InputImage> images;
+	int atlasColumns = 1;
+	int atlasRows = 1;
 };
 
 template<typename... Args>
@@ -192,10 +204,8 @@ static InputMesh loadGlb(string path){
 
 	json gltf = json::parse(file.begin() + 20, file.begin() + 20 + jsonLength);
 
-	// Only a single primitive without node transformations is supported
-	if(gltf["meshes"].size() != 1 || gltf["meshes"][0]["primitives"].size() != 1){
-		fail("expected exactly one mesh with exactly one primitive");
-	}
+	// One mesh, possibly with multiple primitives, without node transformations
+	if(gltf["meshes"].size() != 1) fail("expected exactly one mesh");
 
 	int meshNodes = 0;
 	for(const json& node : gltf["nodes"]){
@@ -206,47 +216,112 @@ static InputMesh loadGlb(string path){
 	}
 	if(meshNodes != 1) fail("expected exactly one node that references the mesh, found {}", meshNodes);
 
-	const json& primitive = gltf["meshes"][0]["primitives"][0];
-	const json& attributes = primitive["attributes"];
+	// glTF image index of a primitive's base color texture, -1 if it has none
+	auto getBaseColorImage = [&](const json& primitive) -> int {
+		if(!primitive.contains("material")) return -1;
 
-	if(primitive.value("mode", 4) != 4) fail("only triangle lists are supported");
-	if(!attributes.contains("POSITION") || !attributes.contains("TEXCOORD_0") || !primitive.contains("indices")){
-		fail("expected a primitive with POSITION, TEXCOORD_0 and indices");
-	}
+		const json& material = gltf["materials"][primitive["material"].get<int>()];
+		if(!material.contains("pbrMetallicRoughness") || !material["pbrMetallicRoughness"].contains("baseColorTexture")) return -1;
+
+		const json& textureInfo = material["pbrMetallicRoughness"]["baseColorTexture"];
+		if(textureInfo.value("texCoord", 0) != 0) fail("base color texture does not use TEXCOORD_0");
+
+		return gltf["textures"][textureInfo["index"].get<int>()]["source"].get<int>();
+	};
 
 	InputMesh mesh;
-	mesh.positions = readFloats(getAccessor(gltf, bin, binLength, attributes["POSITION"], "VEC3"), 3);
-	mesh.uvs = readFloats(getAccessor(gltf, bin, binLength, attributes["TEXCOORD_0"], "VEC2"), 2);
-	mesh.indices = readIndices(getAccessor(gltf, bin, binLength, primitive["indices"], "SCALAR"));
 
-	size_t numVertices = mesh.positions.size() / 3;
-	if(mesh.uvs.size() / 2 != numVertices) fail("POSITION and TEXCOORD_0 have different counts");
-	if(mesh.indices.size() % 3 != 0) fail("index count is not a multiple of 3");
-	for(uint32_t index : mesh.indices){
-		if(index >= numVertices) fail("index {} out of range", index);
+	// Merge the primitives. Their vertices stay separate, clusterlod treats coinciding positions with different uvs as seams.
+	struct PrimitiveRange{
+		size_t firstVertex;
+		size_t numVertices;
+		int image;
+	};
+	vector<PrimitiveRange> primitiveRanges;
+
+	for(const json& primitive : gltf["meshes"][0]["primitives"]){
+		const json& attributes = primitive["attributes"];
+
+		if(primitive.value("mode", 4) != 4) fail("only triangle lists are supported");
+		if(!attributes.contains("POSITION") || !attributes.contains("TEXCOORD_0") || !primitive.contains("indices")){
+			fail("expected primitives with POSITION, TEXCOORD_0 and indices");
+		}
+
+		vector<float> positions = readFloats(getAccessor(gltf, bin, binLength, attributes["POSITION"], "VEC3"), 3);
+		vector<float> uvs = readFloats(getAccessor(gltf, bin, binLength, attributes["TEXCOORD_0"], "VEC2"), 2);
+		vector<uint32_t> indices = readIndices(getAccessor(gltf, bin, binLength, primitive["indices"], "SCALAR"));
+
+		size_t numVertices = positions.size() / 3;
+		size_t firstVertex = mesh.positions.size() / 3;
+		if(uvs.size() / 2 != numVertices) fail("POSITION and TEXCOORD_0 have different counts");
+		if(indices.size() % 3 != 0) fail("index count is not a multiple of 3");
+		if(firstVertex + numVertices > UINT32_MAX) fail("too many vertices");
+
+		mesh.positions.insert(mesh.positions.end(), positions.begin(), positions.end());
+		mesh.uvs.insert(mesh.uvs.end(), uvs.begin(), uvs.end());
+
+		mesh.indices.reserve(mesh.indices.size() + indices.size());
+		for(uint32_t index : indices){
+			if(index >= numVertices) fail("index {} out of range", index);
+			mesh.indices.push_back(uint32_t(firstVertex + index));
+		}
+
+		primitiveRanges.push_back({firstVertex, numVertices, getBaseColorImage(primitive)});
 	}
 
-	// Base color texture, if the material has one
-	if(primitive.contains("material")){
-		const json& material = gltf["materials"][primitive["material"].get<int>()];
+	// Base color textures, each distinct image once
+	vector<int> imageTiles(gltf.contains("images") ? gltf["images"].size() : 0, -1);
+	for(const PrimitiveRange& range : primitiveRanges){
+		if(range.image < 0 || imageTiles[range.image] >= 0) continue;
 
-		if(material.contains("pbrMetallicRoughness") && material["pbrMetallicRoughness"].contains("baseColorTexture")){
-			const json& textureInfo = material["pbrMetallicRoughness"]["baseColorTexture"];
-			if(textureInfo.value("texCoord", 0) != 0) fail("base color texture does not use TEXCOORD_0");
+		const json& image = gltf["images"][range.image];
+		if(!image.contains("bufferView")) fail("only images embedded in the GLB are supported");
 
-			const json& texture = gltf["textures"][textureInfo["index"].get<int>()];
-			const json& image = gltf["images"][texture["source"].get<int>()];
-			if(!image.contains("bufferView")) fail("only images embedded in the GLB are supported");
+		const json& view = gltf["bufferViews"][image["bufferView"].get<int>()];
+		size_t offset = view.value("byteOffset", size_t(0));
+		size_t length = view["byteLength"];
+		if(offset + length > binLength) fail("image bufferView exceeds the BIN chunk");
 
-			const json& view = gltf["bufferViews"][image["bufferView"].get<int>()];
-			size_t offset = view.value("byteOffset", size_t(0));
-			size_t length = view["byteLength"];
-			if(offset + length > binLength) fail("image bufferView exceeds the BIN chunk");
+		imageTiles[range.image] = int(mesh.images.size());
+		mesh.images.push_back({vector<uint8_t>(bin + offset, bin + offset + length), image.value("mimeType", "")});
+	}
 
-			mesh.image.assign(bin + offset, bin + offset + length);
-			mesh.imageMimeType = image.value("mimeType", "");
+	bool someWithoutTexture = std::any_of(primitiveRanges.begin(), primitiveRanges.end(), [](const PrimitiveRange& range){ return range.image < 0; });
+	if(!mesh.images.empty() && someWithoutTexture) fail("either all or none of the primitives must have a base color texture");
+
+	// Multiple textures: Combine them into an atlas, with as few tiles as possible, and as square as possible.
+	// The uvs of each primitive are clamped to its tile, as with the source's clamp-to-edge sampler.
+	if(mesh.images.size() > 1){
+		int numImages = int(mesh.images.size());
+		mesh.atlasColumns = numImages;
+		mesh.atlasRows = 1;
+
+		for(int columns = numImages; columns >= 1; columns--){
+			int rows = (numImages + columns - 1) / columns;
+			int cells = columns * rows;
+			int bestCells = mesh.atlasColumns * mesh.atlasRows;
+
+			if(cells < bestCells || (cells == bestCells && abs(columns - rows) < abs(mesh.atlasColumns - mesh.atlasRows))){
+				mesh.atlasColumns = columns;
+				mesh.atlasRows = rows;
+			}
+		}
+
+		for(const PrimitiveRange& range : primitiveRanges){
+			int tile = imageTiles[range.image];
+			float column = float(tile % mesh.atlasColumns);
+			float row = float(tile / mesh.atlasColumns);
+
+			for(size_t i = range.firstVertex; i < range.firstVertex + range.numVertices; i++){
+				float& u = mesh.uvs[2 * i + 0];
+				float& v = mesh.uvs[2 * i + 1];
+				u = (column + std::clamp(u, 0.0f, 1.0f)) / float(mesh.atlasColumns);
+				v = (row + std::clamp(v, 0.0f, 1.0f)) / float(mesh.atlasRows);
+			}
 		}
 	}
+
+	println("    {} primitives, {} textures", primitiveRanges.size(), mesh.images.size());
 
 	return mesh;
 }
@@ -456,10 +531,14 @@ static void run(string inputPath, fs::path outputDir){
 	writeBinaryFile(outputDir / "uvs.bin", outUvs);
 	writeBinaryFile(outputDir / "triangles.bin", outTriangles);
 
-	string textureFile = "";
-	if(!input.image.empty()){
-		textureFile = input.imageMimeType == "image/png" ? "texture.png" : "texture.jpg";
-		writeBinaryFile(outputDir / textureFile, input.image);
+	// textures as embedded in the GLB: texture.jpg/png, or the tiles of the atlas texture_<i>.jpg/png
+	vector<string> textureFiles;
+	for(size_t i = 0; i < input.images.size(); i++){
+		string extension = input.images[i].mimeType == "image/png" ? ".png" : ".jpg";
+		string file = input.images.size() == 1 ? "texture" + extension : std::format("texture_{}{}", i, extension);
+
+		writeBinaryFile(outputDir / file, input.images[i].data);
+		textureFiles.push_back(file);
 	}
 
 	json metadata;
@@ -536,10 +615,11 @@ static void run(string inputPath, fs::path outputDir){
 		{"triangles", {{"file", "triangles.bin"}, {"count", outTriangles.size() / 3}, {"stride", 3},  {"type", "uint8 x3, cluster-local vertex indices"}}},
 	};
 
-	if(!textureFile.empty()){
+	if(!textureFiles.empty()){
 		metadata["texture"] = {
-			{"file", textureFile},
-			{"mimeType", input.imageMimeType},
+			{"files", textureFiles},
+			{"columns", input.atlasColumns},
+			{"rows", input.atlasRows},
 		};
 	}
 

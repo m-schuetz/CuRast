@@ -75,8 +75,10 @@ void initScene() {
 	// Runtime::controls->pitch  = -0.9;
 
 	// clustered LOD mesh, created with tools/clodbuilder
-	string file = "/home/mschuetz/dev/workspaces/CuRast/resources/hakone";
-	shared_ptr<ClusteredMeshNode> node = make_shared<ClusteredMeshNode>(file, "hakone");
+	// string file = "/home/mschuetz/dev/workspaces/CuRast/resources/hakone";
+	// shared_ptr<ClusteredMeshNode> node = make_shared<ClusteredMeshNode>(file, "hakone");
+	string file = "/run/media/mschuetz/Lightning/resources/meshes/odm_wietrznia_clustered";
+	shared_ptr<ClusteredMeshNode> node = make_shared<ClusteredMeshNode>(file, "odm_wietrznia");
 	scene.root->children.push_back(node);
 
 	Runtime::controls->target = (node->aabb.min + node->aabb.max) * 0.5f;

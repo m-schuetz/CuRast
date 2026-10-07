@@ -2,7 +2,7 @@
 
 Converts a GLB mesh into a clustered LOD representation (a Nanite-style cluster DAG). The clusters, groups, simplification errors and the group hierarchy are computed by [meshoptimizer](https://github.com/zeux/meshoptimizer) v1.3, using `clodBuild()` and `clodBuildHierarchy()` from its [demo/clusterlod.h](https://github.com/zeux/meshoptimizer/blob/v1.3/demo/clusterlod.h). This tool only loads the GLB and writes the results into flat binary files that can be memory-mapped or copied to the GPU as they are.
 
-Supported input: one mesh with one triangle primitive with `POSITION`, `TEXCOORD_0` and indices, no node transformations, and optionally a base color texture embedded in the GLB.
+Supported input: one mesh with triangle primitives with `POSITION`, `TEXCOORD_0` and indices, no node transformations, and optionally base color textures embedded in the GLB. Other attributes, e.g. vertex colors, are ignored. All primitives are merged into one mesh. If they use different textures, the textures become the tiles of an atlas, and the uvs are remapped to it (see `texture` in metadata.json).
 
 ## Build and run
 
@@ -14,11 +14,14 @@ cmake --build tools/clodbuilder/build -j
 ./tools/clodbuilder/build/clodbuilder <input.glb> <outputDir>
 ```
 
-CuRast reads the texture from a BC7-compressed `texture.dds` with mip levels. Convert the `texture.jpg` that clodbuilder writes with [AMD Compressonator](https://github.com/GPUOpen-Tools/compressonator/releases) (V4.5.52, CLI for Linux). Let the levels end at 4x4: Compressonator V4.5.52 encodes the 2x2 level incorrectly (half of its texels are black). For an 8192x8192 texture, that's 12 levels:
+CuRast reads the texture from a BC7-compressed `texture.dds` with mip levels. `convert_textures.py` creates it from the textures that clodbuilder writes, using [AMD Compressonator](https://github.com/GPUOpen-Tools/compressonator/releases) (V4.5.52, CLI for Linux). Compressonator is looked up on the PATH and in `~/.local/bin`, or passed as the second argument:
 
 ```
-compressonatorcli -fd BC7 -miplevels 12 -NumThreads 32 <outputDir>/texture.jpg <outputDir>/texture.dds
+python3 tools/clodbuilder/convert_textures.py <outputDir> [path/to/compressonatorcli]
 ```
+
+- Mip levels end at 4x4, because Compressonator V4.5.52 encodes smaller levels incorrectly (half of their texels are black).
+- An atlas is assembled from the BC7 blocks of its separately encoded tiles, so mip levels don't bleed between tiles. The tiles must have the same size.
 
 ## Settings
 
@@ -42,8 +45,10 @@ All values are little-endian. Clusters are stored in the order clodBuild produce
 | `positions.bin` | `float x, y, z` per vertex, in the units of the source mesh |
 | `uvs.bin` | `float u, v` per vertex, glTF convention: (0, 0) is the top-left corner of the texture |
 | `triangles.bin` | `uint8 i0, i1, i2` per triangle, indices relative to the cluster's `vertexOffset` |
-| `texture.jpg` | The source's base color texture, copied as is |
-| `texture.dds` | Not written by clodbuilder: The texture, BC7-compressed with mip levels (see above) |
+| `texture.jpg/png` | The source's base color texture, copied as is. With multiple textures: `texture_0.jpg/png`, `texture_1.jpg/png`, ..., the tiles of the atlas. |
+| `texture.dds` | Written by `convert_textures.py`: The texture or atlas, BC7-compressed with mip levels (see above) |
+
+`texture` in metadata.json lists the texture `files`, and the atlas layout: `columns` x `rows` tiles, filled row by row, starting at the top left. Tile `i` covers uvs from `(i % columns, i / columns) / (columns, rows)` to `(i % columns + 1, i / columns + 1) / (columns, rows)`.
 
 ```cpp
 struct Cluster{                 // 112 bytes
