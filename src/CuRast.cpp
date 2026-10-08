@@ -878,16 +878,56 @@ u32 depthGradient(float t){
 	return color;
 }
 
+// Writes a file under a hidden temporary name, and renames it once it is complete. Other programs that watch the 
+// folder, e.g. file browsers, image viewers or scripts, would otherwise see files with 0 bytes while they are written.
+bool writeFileAtomically(string path, const void* data, u64 size){
+	fs::path target = path;
+	fs::path temporary = target.parent_path() / ("." + target.filename().string() + ".tmp");
+
+	std::ofstream stream(temporary, std::ios::binary);
+	stream.write((const char*)data, size);
+	stream.close();
+
+	std::error_code error;
+	if(stream.fail()){
+		fs::remove(temporary, error);
+		return false;
+	}
+
+	fs::rename(temporary, target, error);
+
+	return !error;
+}
+
+// PNG file contents, encoded in memory
+vector<u8> encodePng(int width, int height, int numChannels, const void* pixels){
+	vector<u8> png;
+
+	auto append = [](void* context, void* data, int size){
+		vector<u8>* png = (vector<u8>*)context;
+		png->insert(png->end(), (u8*)data, (u8*)data + size);
+	};
+
+	if(!stbi_write_png_to_func(append, &png, width, height, numChannels, pixels, width * numChannels)){
+		png.clear();
+	}
+
+	return png;
+}
+
 // "Capture TD" (toolbar): Renders the current view once more at 1920x1080, and at 1/2, 1/4 and 1/8 of that, 
 // independent of the window size. Each resolution is rendered on its own, e.g. with the LODs for that resolution. 
-// For each resolution, saves
-// - td/<dataset>_<n>_color_<width>x<height>.png: the colors as displayed, but without EDL and GUI, and with a transparent background.
-// - td/<dataset>_<n>_depth_<width>x<height>.png: view-space depth as colors of DEPTH_GRADIENT, from its first color at the 
-//   image's minimum depth to its last color at the maximum depth. Transparent background.
-// - td/<dataset>_<n>_depth_<width>x<height>.bin: view-space depth as 32 bit floats, without any header. Rows from top to bottom,
-//   like the images. Background pixels are +infinity.
+// If a Potree point cloud is loaded, all resolutions are rendered with point budgets of 1M, 5M and 20M.
+// For each rendering, saves
+// - td/<dataset>_<n>[_<budget>]_color_<width>x<height>.png: the colors as displayed, but without EDL and GUI, and with 
+//   a transparent background.
+// - td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.png: view-space depth as colors of DEPTH_GRADIENT, from its first 
+//   color at the image's minimum depth to its last color at the maximum depth. Transparent background.
+// - td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.bin: view-space depth as 32 bit floats, without any header. 
+//   Rows from top to bottom, like the images. Background pixels are +infinity.
 // <dataset> is the name of the first loaded dataset, see getFirstDatasetName(). <n> is the first number without a 
-// capture of that dataset yet. The td folder is relative to the working directory.
+// capture of that dataset yet. <budget> is the point budget, e.g. 5M, only with Potree point clouds.
+// The td folder is relative to the working directory.
 void captureTd(Scene* scene, View view){
 	constexpr int fullWidth = 1920;
 	constexpr int fullHeight = 1080;
@@ -900,10 +940,34 @@ void captureTd(Scene* scene, View view){
 
 	fs::create_directories("td");
 
-	int number = 0;
+	// the first number for which no file starts with <dataset>_<n>_
 	string datasetName = getFirstDatasetName(scene);
-	string prefix = datasetName.empty() ? "td/" : "td/" + datasetName + "_";
-	while(fs::exists(format("{}{:04}_color_{}x{}.png", prefix, number, fullWidth, fullHeight))) number++;
+	string namePrefix = datasetName.empty() ? "" : datasetName + "_";
+	auto isUsed = [&](int number){
+		string start = format("{}{:04}_", namePrefix, number);
+		for(const fs::directory_entry& entry : fs::directory_iterator("td")){
+			if(entry.path().filename().string().starts_with(start)) return true;
+		}
+		return false;
+	};
+
+	int number = 0;
+	while(isUsed(number)) number++;
+
+	// point budgets, only for Potree point clouds
+	struct Pass{
+		i64 pointBudget;
+		string label;
+	};
+
+	bool hasPotree = false;
+	scene->forEach<PotreeFileNode>([&](PotreeFileNode* node){ hasPotree = true; });
+
+	i64 pointBudget = CuRastSettings::pointBudget;
+	vector<Pass> passes = {{pointBudget, ""}};
+	if(hasPotree){
+		passes = {{1'000'000, "_1M"}, {5'000'000, "_5M"}, {20'000'000, "_20M"}};
+	}
 
 	// keep these passes out of the overlay and the timings
 	auto debugValueList = Runtime::debugValueList;
@@ -916,9 +980,12 @@ void captureTd(Scene* scene, View view){
 	shared_ptr<Camera> camera = VKRenderer::camera;
 	view.proj = dmat4(Camera::createProjectionMatrix(float(camera->near_), float(glm::pi<double>() * camera->fovy / 180.0), float(fullWidth) / float(fullHeight)));
 
+	for(const Pass& pass : passes)
 	for(int divisor : {1, 2, 4, 8}){
 		int width = fullWidth / divisor;
 		int height = fullHeight / divisor;
+
+		CuRastSettings::pointBudget = pass.pointBudget;
 
 		RenderTarget target;
 		target.colorbuffer = (u64*)framebuffer->ptr;
@@ -962,17 +1029,19 @@ void captureTd(Scene* scene, View view){
 			depthColors[i] = background ? 0 : depthGradient(normalized);
 		}
 
-		string colorPath = format("{}{:04}_color_{}x{}.png", prefix, number, width, height);
-		string depthPath = format("{}{:04}_depth_{}x{}.png", prefix, number, width, height);
-		string depthBinPath = format("{}{:04}_depth_{}x{}.bin", prefix, number, width, height);
+		string name = format("td/{}{:04}{}", namePrefix, number, pass.label);
+		string colorPath = format("{}_color_{}x{}.png", name, width, height);
+		string depthPath = format("{}_depth_{}x{}.png", name, width, height);
+		string depthBinPath = format("{}_depth_{}x{}.bin", name, width, height);
 
-		std::ofstream depthBin(depthBinPath, std::ios::binary);
-		depthBin.write((const char*)depth.data(), byteSizeOf(depth));
-		depthBin.close();
+		// each file appears only once it is complete, see writeFileAtomically()
+		vector<u8> colorPng = encodePng(width, height, 4, color.data());
+		vector<u8> depthPng = encodePng(width, height, 4, depthColors.data());
 
-		bool success = stbi_write_png(colorPath.c_str(), width, height, 4, color.data(), width * 4)
-		            && stbi_write_png(depthPath.c_str(), width, height, 4, depthColors.data(), width * 4)
-		            && depthBin.good();
+		bool success = !colorPng.empty() && !depthPng.empty()
+		            && writeFileAtomically(colorPath, colorPng.data(), colorPng.size())
+		            && writeFileAtomically(depthPath, depthPng.data(), depthPng.size())
+		            && writeFileAtomically(depthBinPath, depth.data(), byteSizeOf(depth));
 
 		if(success){
 			println("saved {}, {} (depth {:.3f} to {:.3f}) and {}", fs::absolute(colorPath).string(), depthPath, minDepth, maxDepth, depthBinPath);
@@ -981,6 +1050,7 @@ void captureTd(Scene* scene, View view){
 		}
 	}
 
+	CuRastSettings::pointBudget = pointBudget;
 	Runtime::debugValueList = debugValueList;
 	Runtime::measureTimings = measureTimings;
 	Timer::enabled = timerEnabled;
