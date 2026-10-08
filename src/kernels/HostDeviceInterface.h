@@ -89,13 +89,17 @@ struct BC7Texture{
 	u32 numLevels;
 };
 
+// Upper limit for the number of visible clusters of all clustered meshes, as they are part of the triangle IDs in the framebuffer
+constexpr u32 MAX_VISIBLE_CLUSTERS = 1u << 24;
+
 // Per-frame counters of the clustered mesh kernels.
-// Written by kernel_selectClusters (or uploaded after BVH traversal on the CPU), and by kernel_drawClusters.
+// Written by kernel_selectClusters (with BVH traversal, the CPU knows them), kernel_shadeClusters and kernel_countDistinctUvs.
 struct ClusterCounters{
 	u32 numVisibleClusters;
 	u32 numVisibleTriangles;
 	u32 numVisibleVertices;
-	float textureTexels;     // estimated number of distinct texels that kernel_drawClusters samples
+	float textureTexels;          // estimated number of distinct texels that kernel_shadeClusters samples
+	u32 numDistinctUvVertices;    // vertices whose uvs kernel_shadeClusters read. Only counted if requested.
 };
 
 // A ClusteredMeshNode's data in VRAM or memory-mapped files, plus the per-frame parameters for drawing it

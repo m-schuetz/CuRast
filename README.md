@@ -64,7 +64,7 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds or meshes 
 - `PotreeFileNode`: Memory-maps a point cloud converted with [PotreeConverter 2.0](https://github.com/potree/PotreeConverter) and renders the most important octree nodes, up to a point budget that can be adjusted in the toolbar (1M to 20M, default 5M). The toolbar also switches between two render paths:
     - Memory-mapped: The GPU reads the points directly from the memory-mapped octree.bin.
     - Direct Storage: Each frame, the visible nodes are read from octree.bin into VRAM via cuFile ([GPUDirect Storage](https://docs.nvidia.com/gpudirect-storage/)), without caching. True SSD-to-GPU transfers need the nvidia-fs kernel module (or PCI P2PDMA) and a supported file system such as ext4 or xfs. Otherwise, cuFile runs in compatibility mode and reads via host memory. `/usr/local/cuda/gds/tools/gdscheck -p` shows which mode is available.
-- `ClusteredMeshNode`: Loads a clustered LOD mesh created with [tools/clodbuilder](tools/clodbuilder/README.md). Each frame, the clusters whose simplification error is below a threshold in pixels (toolbar: LOD Error) are selected, either by traversing a BVH over the cluster groups on the CPU (default), or by testing every cluster on the GPU. The selected clusters are then rasterized with CUDA. The toolbar switches where the clusters, vertices, triangles and the texture are read from:
+- `ClusteredMeshNode`: Loads a clustered LOD mesh created with [tools/clodbuilder](tools/clodbuilder/README.md). Each frame, the clusters whose simplification error is below a threshold in pixels (toolbar: LOD Error) are selected, either by traversing a BVH over the cluster groups on the CPU (default), or by testing every cluster on the GPU. The selected clusters are then rasterized with CUDA into a visibility buffer (depth and triangle ID per pixel), and each visible pixel is shaded afterwards. The toolbar switches where the clusters, vertices, triangles and the texture are read from:
     - VRAM: Copied to VRAM on first use.
     - Memory-mapped: The GPU reads them directly from the memory-mapped files.
 
@@ -83,7 +83,7 @@ Screenshots of the window, including the GUI: `CURAST_SCREENSHOT=<file.png> ./Cu
 | [src/kernels/laspoints.cu](src/kernels/laspoints.cu), [src/kernels/potreeFileRenderer.cu](src/kernels/potreeFileRenderer.cu) | CUDA kernels that render points directly from memory-mapped files |
 | [src/kernels/potreeDirectStorageRenderer.cu](src/kernels/potreeDirectStorageRenderer.cu) | CUDA kernel that renders Potree octree nodes read into VRAM via cuFile |
 | [src/scene/ClusteredMeshNode.h](src/scene/ClusteredMeshNode.h) | Scene node for clustered LOD meshes created with [tools/clodbuilder](tools/clodbuilder/README.md). Loads all files into RAM, memory-maps them, and copies them to VRAM on first use. |
-| [src/kernels/trianglesClustered.cu](src/kernels/trianglesClustered.cu) | CUDA kernels that select the visible clusters of the LOD cut, and rasterize them |
+| [src/kernels/trianglesClustered.cu](src/kernels/trianglesClustered.cu) | CUDA kernels that select the visible clusters of the LOD cut, rasterize them into a visibility buffer, and shade the visible pixels |
 | [src/kernels/resolve.cu](src/kernels/resolve.cu) | Transforms the color buffer to a texture for display, including EDL |
 | [src/CuRast.cpp](src/CuRast.cpp) | Host-side draw code that launches the kernels, including the octree traversal for Potree files.  |
 

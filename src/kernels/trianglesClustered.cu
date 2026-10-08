@@ -1,11 +1,13 @@
-// Renders clustered LOD meshes (see ClusteredMeshNode and tools/clodbuilder/README.md) in two passes:
+// Renders clustered LOD meshes (see ClusteredMeshNode and tools/clodbuilder/README.md) in three passes:
 // 1. kernel_selectClusters: One thread per cluster. Selects the clusters of the LOD cut for the current view,
 //    i.e., clusters whose own error is small enough on screen while the error of the coarser clusters that
 //    replace them is not. Culls them against the view frustum and appends the remaining ones to a list.
 // 2. kernel_drawClusters: One block per visible cluster. Transforms the cluster's vertices into shared memory,
 //    then rasterizes its triangles. Small triangles are rasterized by one thread each. Larger ones are stashed in 
 //    shared memory. Once its threads are done with their small triangles, each warp repeatedly takes the next 
-//    stashed triangle, and rasterizes it with all 32 threads.
+//    stashed triangle, and rasterizes it with all 32 threads. Writes depth and triangle ID (a visibility buffer).
+// 3. kernel_shadeClusters: One thread per pixel. Replaces triangle IDs with colors, so each visible pixel is 
+//    textured exactly once, regardless of overdraw.
 //
 // The texture is BC7-compressed and decoded here (see bc7.cuh), so it can be read from VRAM or from a memory-mapped file.
 //
@@ -111,12 +113,31 @@ struct ScreenVertex{
 struct Triangle{
 	vec2 p0, p1, p2;               // screen space, in pixels
 	float invW0, invW1, invW2;     // 1 / view-space depth
-	vec2 uv0, uv1, uv2;
 	float invArea;
-	u32 textureLevel;              // mip level, from the size of a pixel in texels
-	float texelsPerPixel;          // area of a pixel in texels of that level, to estimate how much texture data is read
+	u32 id;                        // see toTriangleID()
 	int minX, minY, maxX, maxY;    // pixel bounding box, clamped to the render target
 };
+
+// The draw kernel writes depth and triangle ID into the framebuffer, a visibility buffer. kernel_shadeClusters then
+// replaces the ID with the triangle's color. IDs have bit 31 cleared, while colors always have alpha 255, i.e., bit 31 set.
+// The ID is the cluster's index in the list of visible clusters (offset by those of previously drawn meshes, 24 bits),
+// and the triangle's index within the cluster (7 bits).
+constexpr u32 TRIANGLE_INDEX_BITS = 7;
+static_assert(MAX_VISIBLE_CLUSTERS << TRIANGLE_INDEX_BITS <= 0x80000000u);
+
+__device__ u32 toTriangleID(u32 visibleIndex, u32 triangleIndex){
+	return (visibleIndex << TRIANGLE_INDEX_BITS) | triangleIndex;
+}
+
+__device__ ScreenVertex projectVertex(const mat4& transform, vec3 position, const RenderTarget& target){
+	vec4 clip = transform * vec4(position, 1.0f);
+
+	return {
+		(clip.x / clip.w * 0.5f + 0.5f) * float(target.width),
+		(clip.y / clip.w * 0.5f + 0.5f) * float(target.height),
+		clip.w
+	};
+}
 
 // RGBA8 texel of a mip level, clamp to edge
 __device__ u32 fetchTexel(const u8* levelData, u32 levelWidth, u32 levelHeight, int x, int y){
@@ -170,8 +191,7 @@ __device__ float edgeFunction(vec2 a, vec2 b, vec2 p){
 
 // Sets up the triangle with the given cluster-local index. Returns false if it is not visible.
 __device__ bool setupTriangle(
-	Triangle& t, u32 localIndex, const Cluster& cluster,
-	const ScreenVertex* vertices, const float2* uvs,
+	Triangle& t, u32 localIndex, const Cluster& cluster, const ScreenVertex* vertices,
 	const ClusteredMesh& mesh, const RenderTarget& target
 ){
 	const u8* indices = mesh.triangles + 3 * (cluster.triangleOffset + localIndex);
@@ -208,34 +228,11 @@ __device__ bool setupTriangle(
 	t.invW1 = 1.0f / v1.w;
 	t.invW2 = 1.0f / v2.w;
 
-	t.uv0 = {uvs[indices[0]].x, uvs[indices[0]].y};
-	t.uv1 = {uvs[indices[1]].x, uvs[indices[1]].y};
-	t.uv2 = {uvs[indices[2]].x, uvs[indices[2]].y};
-
-	t.textureLevel = 0;
-	t.texelsPerPixel = 0.0f;
-
-	if(mesh.texture.data != nullptr){
-		// mip level closest to the size of a pixel in texels, from the screen-space derivatives of the (affinely interpolated) uvs
-		vec2 textureSize = {float(mesh.texture.width), float(mesh.texture.height)};
-		vec2 dw0 = vec2(-(t.p2.y - t.p1.y), t.p2.x - t.p1.x) * t.invArea;
-		vec2 dw1 = vec2(-(t.p0.y - t.p2.y), t.p0.x - t.p2.x) * t.invArea;
-		vec2 dw2 = vec2(-(t.p1.y - t.p0.y), t.p1.x - t.p0.x) * t.invArea;
-		vec2 dTexelsdx = (t.uv0 * dw0.x + t.uv1 * dw1.x + t.uv2 * dw2.x) * textureSize;
-		vec2 dTexelsdy = (t.uv0 * dw0.y + t.uv1 * dw1.y + t.uv2 * dw2.y) * textureSize;
-		float level = max(log2f(max(length(dTexelsdx), length(dTexelsdy))), 0.0f);
-		t.textureLevel = min(u32(level + 0.5f), mesh.texture.numLevels - 1);
-
-		// the pixel's footprint is a parallelogram spanned by the derivatives. Each level has a quarter of the texels.
-		float footprint = abs(dTexelsdx.x * dTexelsdy.y - dTexelsdx.y * dTexelsdy.x);
-		t.texelsPerPixel = footprint / float(1u << (2 * t.textureLevel));
-	}
-
 	return true;
 }
 
-// Returns true if the texture was sampled
-__device__ bool drawPixel(const Triangle& t, int x, int y, u32 flatColor, const ClusteredMesh& mesh, const RenderTarget& target){
+// Writes depth and triangle ID, if the pixel is covered and closer than what it already holds
+__device__ void drawPixel(const Triangle& t, int x, int y, const RenderTarget& target){
 
 	// All three edge functions are evaluated explicitly, so that pixels on an edge shared by two triangles
 	// are covered by at least one of them.
@@ -244,36 +241,16 @@ __device__ bool drawPixel(const Triangle& t, int x, int y, u32 flatColor, const 
 	float w1 = edgeFunction(t.p2, t.p0, p) * t.invArea;
 	float w2 = edgeFunction(t.p0, t.p1, p) * t.invArea;
 
-	if(w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) return false;
+	if(w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) return;
 
-	float invW = w0 * t.invW0 + w1 * t.invW1 + w2 * t.invW2;
-	float depth = 1.0f / invW;
+	float depth = 1.0f / (w0 * t.invW0 + w1 * t.invW1 + w2 * t.invW2);
 
 	i32 pixelID = x + target.width * y;
-	u64 udepth = __float_as_uint(depth);
-
-	// skip the texture fetch if the pixel already holds something closer
-	if(udepth > (target.colorbuffer[pixelID] >> 32)) return false;
-
-	u32 color = flatColor;
-	bool textured = mesh.colorMode == CLUSTER_COLOR_TEXTURE && mesh.texture.data != nullptr;
-	if(textured){
-		vec2 uv = (w0 * t.invW0 * t.uv0 + w1 * t.invW1 * t.uv1 + w2 * t.invW2 * t.uv2) / invW;
-		vec4 texel = sampleTexture(mesh.texture, uv, t.textureLevel);
-
-		color = u32(texel.r + 0.5f)
-			| (u32(texel.g + 0.5f) << 8)
-			| (u32(texel.b + 0.5f) << 16)
-			| (0xffu << 24);
-	}
-
-	u64 fragment = udepth << 32 | color;
+	u64 fragment = (u64(__float_as_uint(depth)) << 32) | t.id;
 
 	if(fragment < target.colorbuffer[pixelID]){
 		atomicMin((unsigned long long*)&target.colorbuffer[pixelID], (unsigned long long)fragment);
 	}
-
-	return textured;
 }
 
 extern "C" __global__ __launch_bounds__(CLUSTER_BLOCK_SIZE)
@@ -281,15 +258,14 @@ void kernel_drawClusters(
 	RenderTarget target,
 	ClusteredMesh mesh,
 	u32* visibleClusters,
-	ClusterCounters* counters
+	u32 numVisibleClusters,
+	u32 visibleOffset
 ){
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
-
 	auto warp = cg::tiled_partition<32>(block);
 
 	__shared__ ScreenVertex sh_vertices[CLUSTER_BLOCK_SIZE];
-	__shared__ float2 sh_uvs[CLUSTER_BLOCK_SIZE];
 
 	// Larger triangles of the current cluster. Raw storage, because __shared__ variables can't have constructors.
 	__shared__ alignas(16) u8 sh_largeTriangleStorage[CLUSTER_BLOCK_SIZE * sizeof(Triangle)];
@@ -298,12 +274,8 @@ void kernel_drawClusters(
 	Triangle* sh_largeTriangles = reinterpret_cast<Triangle*>(sh_largeTriangleStorage);
 
 	mat4 transform = target.proj * mesh.worldView;
-	u32 numVisibleClusters = counters->numVisibleClusters;
 	u32 tid = block.thread_rank();
 	u32 lane = warp.thread_rank();
-
-	// estimated number of distinct texels sampled by this thread, see Triangle::texelsPerPixel
-	float sampledTexels = 0.0f;
 
 	// Current block draws visibleClusters[blockRank].
 	// Loops because only as many blocks are launched as can be resident on the GPU.
@@ -316,16 +288,7 @@ void kernel_drawClusters(
 		Cluster cluster = mesh.clusters[clusterIndex];
 
 		if(tid < cluster.vertexCount){
-			vec3 position = mesh.positions[cluster.vertexOffset + tid];
-			vec4 clip = transform * vec4(position, 1.0f);
-
-			sh_vertices[tid] = {
-				(clip.x / clip.w * 0.5f + 0.5f) * float(target.width),
-				(clip.y / clip.w * 0.5f + 0.5f) * float(target.height),
-				clip.w
-			};
-			vec2 uv = mesh.uvs[cluster.vertexOffset + tid];
-			sh_uvs[tid] = make_float2(uv.x, uv.y);
+			sh_vertices[tid] = projectVertex(transform, mesh.positions[cluster.vertexOffset + tid], target);
 		}
 
 		if(tid == 0){
@@ -335,16 +298,10 @@ void kernel_drawClusters(
 
 		block.sync();
 
-		u32 flatColor = 0xff888888;
-		if(mesh.colorMode == CLUSTER_COLOR_LEVEL){
-			flatColor = LEVEL_COLORS[cluster.level % 20];
-		}else if(mesh.colorMode == CLUSTER_COLOR_CLUSTER){
-			flatColor = (clusterIndex * 2654435761u) | 0xff000000;
-		}
-
 		Triangle t;
-		bool visible = tid < cluster.triangleCount && setupTriangle(t, tid, cluster, sh_vertices, sh_uvs, mesh, target);
+		bool visible = tid < cluster.triangleCount && setupTriangle(t, tid, cluster, sh_vertices, mesh, target);
 		bool large = visible && (t.maxX - t.minX + 1) * (t.maxY - t.minY + 1) > MAX_THREAD_TRIANGLE_PIXELS;
+		t.id = toTriangleID(visibleOffset + i, tid);
 
 		// stash larger triangles, with one atomic per warp
 		u32 largeMask = warp.ballot(large);
@@ -362,7 +319,7 @@ void kernel_drawClusters(
 		if(visible && !large){
 			for(int y = t.minY; y <= t.maxY; y++)
 			for(int x = t.minX; x <= t.maxX; x++){
-				if(drawPixel(t, x, y, flatColor, mesh, target)) sampledTexels += t.texelsPerPixel;
+				drawPixel(t, x, y, target);
 			}
 		}
 
@@ -380,17 +337,142 @@ void kernel_drawClusters(
 			int numPixels = width * (large.maxY - large.minY + 1);
 
 			for(int pixel = lane; pixel < numPixels; pixel += 32){
-				if(drawPixel(large, large.minX + pixel % width, large.minY + pixel / width, flatColor, mesh, target)) sampledTexels += large.texelsPerPixel;
+				drawPixel(large, large.minX + pixel % width, large.minY + pixel / width, target);
 			}
 		}
 
 		// shared memory is reused for the next cluster
 		block.sync();
 	}
+}
+
+// Replaces the triangle IDs that kernel_drawClusters wrote for this mesh with the triangles' colors. One thread per pixel.
+// - Reads clusters, triangles, vertices and the texture from the mesh, i.e., from VRAM or from the memory-mapped files.
+// - Blocks of 8x32 threads, so that each warp shades 8x4 pixels. Neighboring pixels in both directions mostly sample 
+//   the same 4x4 texel BC7 blocks, so a warp reads fewer distinct blocks than with a row of 32 pixels.
+// - If uvVertexMask is not null, marks each vertex whose uv was read, to count how many distinct uvs were read.
+extern "C" __global__
+void kernel_shadeClusters(
+	RenderTarget target,
+	ClusteredMesh mesh,
+	u32* visibleClusters,
+	u32 numVisibleClusters,
+	u32 visibleOffset,
+	ClusterCounters* counters,
+	u32* uvVertexMask
+){
+	auto block = cg::this_thread_block();
+	auto warp = cg::tiled_partition<32>(block);
+
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	bool inside = x < target.width && y < target.height;
+	u32 pixelID = x + target.width * y;
+
+	// estimated number of distinct texels sampled for this pixel: the area of a pixel in texels of the sampled level
+	float sampledTexels = 0.0f;
+
+	u64 pixel = inside ? target.colorbuffer[pixelID] : 0;
+	u32 id = u32(pixel);
+	u32 visibleIndex = (id >> TRIANGLE_INDEX_BITS) - visibleOffset;  // wraps around for IDs of previously drawn meshes
+	bool isThisMesh = inside && (id & 0x80000000u) == 0 && visibleIndex < numVisibleClusters;
+	bool textured = isThisMesh && mesh.colorMode == CLUSTER_COLOR_TEXTURE && mesh.texture.data != nullptr;
+
+	// Only one thread per distinct triangle in the warp marks the uvs, as the threads of a warp often shade the same triangle
+	bool marksUvs = false;
+	if(uvVertexMask != nullptr){
+		u32 sameTriangle = warp.match_any(textured ? id : 0xffffffffu);
+		marksUvs = textured && __ffs(sameTriangle) - 1 == warp.thread_rank();
+	}
+
+	if(isThisMesh){
+		u32 triangleIndex = id & ((1u << TRIANGLE_INDEX_BITS) - 1);
+		u32 clusterIndex = visibleClusters[visibleIndex];
+		const Cluster& cluster = mesh.clusters[clusterIndex];
+
+		u32 color = 0xff888888;
+		if(mesh.colorMode == CLUSTER_COLOR_LEVEL){
+			color = LEVEL_COLORS[cluster.level % 20];
+		}else if(mesh.colorMode == CLUSTER_COLOR_CLUSTER){
+			color = (clusterIndex * 2654435761u) | 0xff000000;
+		}else if(textured){
+			u32 vertexOffset = cluster.vertexOffset;
+			const u8* indices = mesh.triangles + 3 * (cluster.triangleOffset + triangleIndex);
+			u32 i0 = indices[0];
+			u32 i1 = indices[1];
+			u32 i2 = indices[2];
+
+			mat4 transform = target.proj * mesh.worldView;
+			ScreenVertex v0 = projectVertex(transform, mesh.positions[vertexOffset + i0], target);
+			ScreenVertex v1 = projectVertex(transform, mesh.positions[vertexOffset + i1], target);
+			ScreenVertex v2 = projectVertex(transform, mesh.positions[vertexOffset + i2], target);
+			vec2 uv0 = mesh.uvs[vertexOffset + i0];
+			vec2 uv1 = mesh.uvs[vertexOffset + i1];
+			vec2 uv2 = mesh.uvs[vertexOffset + i2];
+
+			vec2 p0 = {v0.x, v0.y};
+			vec2 p1 = {v1.x, v1.y};
+			vec2 p2 = {v2.x, v2.y};
+			float area = edgeFunction(p0, p1, p2);
+			float invArea = area != 0.0f ? 1.0f / area : 0.0f;
+
+			// perspective-correct uv at the pixel center
+			vec2 p = {float(x) + 0.5f, float(y) + 0.5f};
+			float w0 = edgeFunction(p1, p2, p) * invArea / v0.w;
+			float w1 = edgeFunction(p2, p0, p) * invArea / v1.w;
+			float w2 = edgeFunction(p0, p1, p) * invArea / v2.w;
+			float sum = w0 + w1 + w2;
+			vec2 uv = sum != 0.0f ? (w0 * uv0 + w1 * uv1 + w2 * uv2) / sum : uv0;
+
+			// mip level closest to the size of a pixel in texels, from the screen-space derivatives of the (affinely interpolated) uvs
+			vec2 textureSize = {float(mesh.texture.width), float(mesh.texture.height)};
+			vec2 dw0 = vec2(-(p2.y - p1.y), p2.x - p1.x) * invArea;
+			vec2 dw1 = vec2(-(p0.y - p2.y), p0.x - p2.x) * invArea;
+			vec2 dw2 = vec2(-(p1.y - p0.y), p1.x - p0.x) * invArea;
+			vec2 dTexelsdx = (uv0 * dw0.x + uv1 * dw1.x + uv2 * dw2.x) * textureSize;
+			vec2 dTexelsdy = (uv0 * dw0.y + uv1 * dw1.y + uv2 * dw2.y) * textureSize;
+			float level = max(log2f(max(length(dTexelsdx), length(dTexelsdy))), 0.0f);
+			u32 levelIndex = min(u32(level + 0.5f), mesh.texture.numLevels - 1);
+
+			vec4 texel = sampleTexture(mesh.texture, uv, levelIndex);
+			color = u32(texel.r + 0.5f)
+				| (u32(texel.g + 0.5f) << 8)
+				| (u32(texel.b + 0.5f) << 16)
+				| (0xffu << 24);
+
+			// the pixel's footprint is a parallelogram spanned by the derivatives. Each level has a quarter of the texels.
+			float footprint = abs(dTexelsdx.x * dTexelsdy.y - dTexelsdx.y * dTexelsdy.x);
+			sampledTexels = footprint / float(1u << (2 * levelIndex));
+
+			if(marksUvs){
+				for(u32 vertex : {i0, i1, i2}){
+					u32 bit = visibleIndex * 128 + vertex;
+					atomicOr(&uvVertexMask[bit / 32], 1u << (bit % 32));
+				}
+			}
+		}
+
+		target.colorbuffer[pixelID] = (pixel & 0xffffffff00000000ull) | color;
+	}
 
 	float warpTexels = cg::reduce(warp, sampledTexels, cg::plus<float>());
 	if(warp.thread_rank() == 0 && warpTexels > 0.0f){
 		atomicAdd(&counters->textureTexels, warpTexels);
+	}
+}
+
+// Counts the bits set by kernel_shadeClusters in uvVertexMask
+extern "C" __global__
+void kernel_countDistinctUvs(const u32* uvVertexMask, u32 numWords, ClusterCounters* counters){
+	auto grid = cg::this_grid();
+	auto warp = cg::tiled_partition<32>(cg::this_thread_block());
+
+	u32 index = grid.thread_rank();
+	u32 bits = index < numWords ? __popc(uvVertexMask[index]) : 0;
+
+	u32 warpBits = cg::reduce(warp, bits, cg::plus<u32>());
+	if(warp.thread_rank() == 0 && warpBits > 0){
+		atomicAdd(&counters->numDistinctUvVertices, warpBits);
 	}
 }
 
@@ -400,7 +482,9 @@ void kernel_drawClusters(
 
 static bool registered =
 	registerKernel("trianglesClustered.cu", "kernel_selectClusters", (const void*)kernel_selectClusters) &&
-	registerKernel("trianglesClustered.cu", "kernel_drawClusters", (const void*)kernel_drawClusters);
+	registerKernel("trianglesClustered.cu", "kernel_drawClusters", (const void*)kernel_drawClusters) &&
+	registerKernel("trianglesClustered.cu", "kernel_shadeClusters", (const void*)kernel_shadeClusters) &&
+	registerKernel("trianglesClustered.cu", "kernel_countDistinctUvs", (const void*)kernel_countDistinctUvs);
 
 void launch_selectClusters(const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, ClusterCounters* counters){
 	if(mesh.numClusters == 0) return;
@@ -415,10 +499,11 @@ void launch_selectClusters(const RenderTarget& target, const ClusteredMesh& mesh
 	Timer::recordDuration("kernel_selectClusters", start, Timer::recordCudaTimestamp());
 }
 
-void launch_drawClusters(const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, ClusterCounters* counters){
-	if(mesh.numClusters == 0) return;
+void launch_drawClusters(
+	const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, uint32_t numVisibleClusters, uint32_t visibleOffset
+){
+	if(numVisibleClusters == 0) return;
 
-	// The number of visible clusters is only known on the GPU.
 	// We launch as many blocks as can be resident, and each loops over the visible clusters.
 	static int numBlocks = [&](){
 		int device, numSMs, blocksPerSM;
@@ -429,7 +514,39 @@ void launch_drawClusters(const RenderTarget& target, const ClusteredMesh& mesh, 
 	}();
 
 	auto start = Timer::recordCudaTimestamp();
-	kernel_drawClusters<<<numBlocks, CLUSTER_BLOCK_SIZE>>>(target, mesh, visibleClusters, counters);
+	kernel_drawClusters<<<numBlocks, CLUSTER_BLOCK_SIZE>>>(target, mesh, visibleClusters, numVisibleClusters, visibleOffset);
 	checkKernelLaunch("kernel_drawClusters");
 	Timer::recordDuration("kernel_drawClusters", start, Timer::recordCudaTimestamp());
+}
+
+void launch_shadeClusters(
+	const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, uint32_t numVisibleClusters,
+	uint32_t visibleOffset, ClusterCounters* counters, uint32_t* uvVertexMask
+){
+	if(numVisibleClusters == 0) return;
+
+	// one thread per pixel, each warp shades 8x4 pixels
+	dim3 blockSize = {8, 32, 1};
+	dim3 gridSize = {
+		(uint32_t(target.width)  + blockSize.x - 1) / blockSize.x,
+		(uint32_t(target.height) + blockSize.y - 1) / blockSize.y,
+		1
+	};
+
+	auto start = Timer::recordCudaTimestamp();
+	kernel_shadeClusters<<<gridSize, blockSize>>>(target, mesh, visibleClusters, numVisibleClusters, visibleOffset, counters, uvVertexMask);
+	checkKernelLaunch("kernel_shadeClusters");
+	Timer::recordDuration("kernel_shadeClusters", start, Timer::recordCudaTimestamp());
+}
+
+void launch_countDistinctUvs(const uint32_t* uvVertexMask, uint32_t numWords, ClusterCounters* counters){
+	if(numWords == 0) return;
+
+	uint32_t blockSize = 256;
+	uint32_t gridSize = (numWords + blockSize - 1) / blockSize;
+
+	auto start = Timer::recordCudaTimestamp();
+	kernel_countDistinctUvs<<<gridSize, blockSize>>>(uvVertexMask, numWords, counters);
+	checkKernelLaunch("kernel_countDistinctUvs");
+	Timer::recordDuration("kernel_countDistinctUvs", start, Timer::recordCudaTimestamp());
 }

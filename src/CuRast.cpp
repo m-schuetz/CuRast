@@ -636,7 +636,8 @@ struct MappedFileTraffic{
 // - Selects the clusters of the LOD cut for the current view, and culls them against the frustum (CuRastSettings::clusterSelection):
 //     - BVH: selectClustersBvh() traverses the BVH over the groups on the CPU, and uploads the list of selected clusters.
 //     - Per cluster: kernel_selectClusters tests every cluster on the GPU.
-// - kernel_drawClusters rasterizes the selected clusters.
+// - kernel_drawClusters rasterizes the selected clusters, writing depth and triangle IDs (a visibility buffer).
+// - After all meshes are drawn, kernel_shadeClusters replaces the IDs with colors, e.g. from the texture.
 // - Render paths (CuRastSettings::clusterRenderPath):
 //     - VRAM: Clusters, vertices, triangles and the BC7 texture are copied to VRAM on first use.
 //       The BVH traversal reads nodes, groups and clusters from RAM.
@@ -654,6 +655,18 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 	u64 numVisitedNodes = 0;
 	double bvhMilliseconds = 0.0;
 	bool hasClusteredMeshes = false;
+
+	// meshes are drawn first, and then shaded
+	struct DrawnMesh{
+		ClusteredMeshNode* node;
+		ClusteredMesh mesh;
+		u32 visibleOffset;        // triangle IDs of this mesh start at this cluster index
+		u32 numVisibleClusters;
+		BvhTraversal traversal;
+		ClusterCounters counters;
+	};
+	vector<DrawnMesh> drawnMeshes;
+	u32 visibleOffset = 0;
 
 	vector<MappedFileTraffic> traffic;
 	auto addTraffic = [&](const ClusteredMeshNode::MappedFile& file, double bytes, bool accurate){
@@ -714,6 +727,10 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 		mesh.frustumPlanes[4] = normalizedPlane(row3 - row2); // Near: clip.z is the near plane distance, i.e., w >= near
 
 		BvhTraversal traversal;
+		ClusterCounters counters = {};
+
+		// the shading kernel accumulates its texture estimate in the counters
+		cudaMemsetAsync(node->gpu_counters, 0, sizeof(ClusterCounters));
 
 		if(useBvh){
 			double tStart = now();
@@ -721,46 +738,70 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 			static vector<u32> visibleClusters;
 			visibleClusters.clear();
 			traversal = selectClustersBvh(node->getBvhData(memoryMapped), mesh, target, visibleClusters);
-
-			// the draw kernel expects the same input as produced by kernel_selectClusters
-			ClusterCounters counters = {u32(visibleClusters.size()), u32(traversal.visibleTriangles), u32(traversal.visibleVertices), 0.0f};
 			cudaMemcpy(node->gpu_visibleClusters, visibleClusters.data(), byteSizeOf(visibleClusters), cudaMemcpyHostToDevice);
-			cudaMemcpy(node->gpu_counters, &counters, sizeof(counters), cudaMemcpyHostToDevice);
 
+			counters = {u32(visibleClusters.size()), u32(traversal.visibleTriangles), u32(traversal.visibleVertices), 0.0f, 0};
 			bvhMilliseconds += (now() - tStart) * 1000.0;
 			numVisitedNodes += traversal.visitedNodes;
 		}else{
-			cudaMemsetAsync(node->gpu_counters, 0, sizeof(ClusterCounters));
 			launch_selectClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
+
+			// the number of visible clusters, to give the next mesh's triangle IDs an offset
+			cudaMemcpy(&counters, node->gpu_counters, sizeof(counters), cudaMemcpyDeviceToHost);
 		}
 
-		launch_drawClusters(target, mesh, node->gpu_visibleClusters, node->gpu_counters);
-
-		ClusterCounters counters;
-		cudaMemcpy(&counters, node->gpu_counters, sizeof(counters), cudaMemcpyDeviceToHost);
 		numVisibleClusters += counters.numVisibleClusters;
 		numVisibleTriangles += counters.numVisibleTriangles;
 
-		if(memoryMapped){
-			// cluster records: those tested by the BVH traversal on the CPU (or all, by kernel_selectClusters), 
-			// plus the visible ones read by kernel_drawClusters
-			u64 clusterRecords = (useBvh ? traversal.testedClusters : mesh.numClusters) + counters.numVisibleClusters;
-
-			addTraffic(node->mapped_nodes, traversal.visitedNodes * sizeof(ClusterBvhNode), true);
-			addTraffic(node->mapped_groups, traversal.visitedGroups * sizeof(ClusterGroup), true);
-			addTraffic(node->mapped_clusters, clusterRecords * sizeof(Cluster), true);
-			addTraffic(node->mapped_positions, counters.numVisibleVertices * sizeof(vec3), true);
-			addTraffic(node->mapped_uvs, counters.numVisibleVertices * sizeof(vec2), true);
-			addTraffic(node->mapped_triangles, counters.numVisibleTriangles * 3, true);
-
-			// BC7: one byte per texel
-			if(mesh.texture.data != nullptr){
-				addTraffic(node->mapped_texture, counters.textureTexels, false);
-			}
+		// the triangle IDs in the framebuffer can only address MAX_VISIBLE_CLUSTERS clusters
+		u32 numDrawn = std::min(counters.numVisibleClusters, MAX_VISIBLE_CLUSTERS - visibleOffset);
+		if(numDrawn < counters.numVisibleClusters){
+			static bool reported = false;
+			if(!reported) println("WARNING: more than {} visible clusters, some are not drawn.", MAX_VISIBLE_CLUSTERS);
+			reported = true;
 		}
 
+		launch_drawClusters(target, mesh, node->gpu_visibleClusters, numDrawn, visibleOffset);
+
+		drawnMeshes.push_back({node, mesh, visibleOffset, numDrawn, traversal, counters});
+		visibleOffset += numDrawn;
 		hasClusteredMeshes = true;
 	});
+
+	// Now that the visibility buffer is complete, replace the triangle IDs with colors
+	for(DrawnMesh& drawn : drawnMeshes){
+		ClusteredMeshNode* node = drawn.node;
+
+		// with the memory-mapped render path, count the uvs read from uvs.bin for the overlay
+		u32* uvVertexMask = memoryMapped ? node->getUvVertexMask(drawn.numVisibleClusters) : nullptr;
+
+		launch_shadeClusters(target, drawn.mesh, node->gpu_visibleClusters, drawn.numVisibleClusters, drawn.visibleOffset, node->gpu_counters, uvVertexMask);
+
+		if(!memoryMapped) continue;
+
+		launch_countDistinctUvs(uvVertexMask, drawn.numVisibleClusters * 128 / 32, node->gpu_counters);
+
+		ClusterCounters shadeCounters;
+		cudaMemcpy(&shadeCounters, node->gpu_counters, sizeof(shadeCounters), cudaMemcpyDeviceToHost);
+
+		// Cluster records: those tested by the BVH traversal on the CPU (or all, by kernel_selectClusters), plus the 
+		// visible ones read by kernel_drawClusters. kernel_shadeClusters reads a subset of the latter, and of the 
+		// positions and triangles that kernel_drawClusters reads. Only kernel_shadeClusters reads uvs.
+		const ClusterCounters& counters = drawn.counters;
+		u64 clusterRecords = (useBvh ? drawn.traversal.testedClusters : drawn.mesh.numClusters) + counters.numVisibleClusters;
+
+		addTraffic(node->mapped_nodes, drawn.traversal.visitedNodes * sizeof(ClusterBvhNode), true);
+		addTraffic(node->mapped_groups, drawn.traversal.visitedGroups * sizeof(ClusterGroup), true);
+		addTraffic(node->mapped_clusters, clusterRecords * sizeof(Cluster), true);
+		addTraffic(node->mapped_positions, counters.numVisibleVertices * sizeof(vec3), true);
+		addTraffic(node->mapped_uvs, shadeCounters.numDistinctUvVertices * sizeof(vec2), true);
+		addTraffic(node->mapped_triangles, counters.numVisibleTriangles * 3, true);
+
+		// BC7: one byte per texel
+		if(drawn.mesh.texture.data != nullptr){
+			addTraffic(node->mapped_texture, shadeCounters.textureTexels, false);
+		}
+	}
 
 	if(useBvh && hasClusteredMeshes && Runtime::measureTimings){
 		Runtime::timings.add("cluster BVH traversal and upload (CPU)", bvhMilliseconds);

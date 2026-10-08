@@ -99,6 +99,8 @@ struct ClusteredMeshNode : public SceneNode{
 	u8* gpu_texture = nullptr;           // the blocks of all levels, without the dds header
 	u32* gpu_visibleClusters = nullptr;  // indices of the clusters selected for the current frame
 	ClusterCounters* gpu_counters = nullptr;
+	u32* gpu_uvVertexMask = nullptr;     // see getUvVertexMask()
+	u64 uvVertexMaskWords = 0;
 
 	ClusteredMeshNode(string dir, string name) : SceneNode(name){
 		this->dir = dir;
@@ -178,6 +180,8 @@ struct ClusteredMeshNode : public SceneNode{
 			MemoryManager::free(gpu_counters);
 		}
 
+		if(gpu_uvVertexMask != nullptr) MemoryManager::free(gpu_uvVertexMask);
+
 		for(MappedFile* file : {&mapped_groups, &mapped_nodes, &mapped_clusters, &mapped_positions, &mapped_uvs, &mapped_triangles, &mapped_texture}){
 			if(file->ptr != nullptr) munmap(file->ptr, file->size);
 			file->ptr = nullptr;
@@ -229,6 +233,23 @@ struct ClusteredMeshNode : public SceneNode{
 		}else{
 			return {nodes.data(), groups.data(), clusters.data(), numLevels};
 		}
+	}
+
+	// A zeroed mask with one bit for each of the up to 128 vertices of each visible cluster, for kernel_shadeClusters
+	// to mark the vertices whose uvs it reads. Grows as needed; the previous frame is complete, so nothing uses the old one.
+	u32* getUvVertexMask(u32 numVisibleClusters){
+		u64 numWords = u64(numVisibleClusters) * 128 / 32;
+
+		if(numWords > uvVertexMaskWords){
+			if(gpu_uvVertexMask != nullptr) MemoryManager::free(gpu_uvVertexMask);
+
+			uvVertexMaskWords = std::max<u64>(2 * numWords, 1024);
+			gpu_uvVertexMask = (u32*)MemoryManager::alloc(uvVertexMaskWords * sizeof(u32), name + " uv vertex mask");
+		}
+
+		cudaMemsetAsync(gpu_uvVertexMask, 0, numWords * sizeof(u32));
+
+		return gpu_uvVertexMask;
 	}
 
 	// The texture's blocks, in VRAM or in the memory-mapped dds file

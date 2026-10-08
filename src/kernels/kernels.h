@@ -36,8 +36,15 @@ void launch_drawPotreeDirectStorageNodes(const RenderTarget& target, PotreeNode*
 
 // trianglesClustered.cu
 // The counters must be zero before selection.
+// visibleOffset: number of visible clusters of previously drawn meshes, to make the triangle IDs in the framebuffer unique.
+// uvVertexMask: optional, see ClusteredMeshNode::getUvVertexMask()
 void launch_selectClusters(const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, ClusterCounters* counters);
-void launch_drawClusters(const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, ClusterCounters* counters);
+void launch_drawClusters(
+	const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, uint32_t numVisibleClusters, uint32_t visibleOffset);
+void launch_shadeClusters(
+	const RenderTarget& target, const ClusteredMesh& mesh, uint32_t* visibleClusters, uint32_t numVisibleClusters,
+	uint32_t visibleOffset, ClusterCounters* counters, uint32_t* uvVertexMask);
+void launch_countDistinctUvs(const uint32_t* uvVertexMask, uint32_t numWords, ClusterCounters* counters);
 
 // List of all kernels, e.g. to inspect their register and shared memory usage.
 // Each .cu file registers its kernels during static initialization.
