@@ -5,9 +5,13 @@
 #include "CURuntime.h"
 #include "CuRastSettings.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <print>
 #include <set>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
 
 namespace fs = std::filesystem;
 
@@ -394,6 +398,13 @@ void VKRenderer::destroy() {
 	commandPools.clear();
 	commandBuffers.clear();
 
+	if (screenshotBuffer != VK_NULL_HANDLE) {
+		vkDestroyBuffer(device, screenshotBuffer, nullptr);
+		vkFreeMemory(device, screenshotMemory, nullptr);
+		screenshotBuffer = VK_NULL_HANDLE;
+		screenshotMemory = VK_NULL_HANDLE;
+	}
+
 	vkDestroyDevice(device, nullptr);
 	device = VK_NULL_HANDLE;
 
@@ -627,7 +638,8 @@ void VKRenderer::createSwapchain() {
 	swCI.imageColorSpace  = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 	swCI.imageExtent      = swapchainExtent;
 	swCI.imageArrayLayers = 1;
-	swCI.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	swCI.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+	                      | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;   // screenshots
 	swCI.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	swCI.preTransform     = capabilities.currentTransform;
 	swCI.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -802,6 +814,100 @@ void VKRenderer::recreateSwapchain() {
 }
 
 // ---------------------------------------------------------------------------
+// Screenshots
+// ---------------------------------------------------------------------------
+
+// Copies the swapchain image, after the GUI was drawn into it, to screenshotBuffer
+void VKRenderer::recordScreenshotCopy(VkCommandBuffer cmd, VkImage image) {
+	VkDeviceSize size = VkDeviceSize(swapchainExtent.width) * swapchainExtent.height * 4;
+
+	// grows with the window; the previous frame is complete, so nothing uses the old buffer anymore
+	if (size > screenshotBufferSize) {
+		if (screenshotBuffer != VK_NULL_HANDLE) {
+			vkDestroyBuffer(device, screenshotBuffer, nullptr);
+			vkFreeMemory(device, screenshotMemory, nullptr);
+		}
+
+		VkBufferCreateInfo bci = {};
+		bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bci.size  = size;
+		bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		assertSucces(vkCreateBuffer(device, &bci, nullptr, &screenshotBuffer));
+
+		VkMemoryRequirements memReqs;
+		vkGetBufferMemoryRequirements(device, screenshotBuffer, &memReqs);
+
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize  = memReqs.size;
+		allocInfo.memoryTypeIndex = findMemoryType(memReqs.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+		assertSucces(vkAllocateMemory(device, &allocInfo, nullptr, &screenshotMemory));
+		assertSucces(vkBindBufferMemory(device, screenshotBuffer, screenshotMemory, 0));
+
+		screenshotBufferSize = size;
+	}
+
+	auto barrier = [&](VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
+		VkImageMemoryBarrier2 b = {};
+		b.sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+		b.srcStageMask     = srcStage;
+		b.srcAccessMask    = srcAccess;
+		b.dstStageMask     = dstStage;
+		b.dstAccessMask    = dstAccess;
+		b.oldLayout        = VK_IMAGE_LAYOUT_GENERAL;
+		b.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+		b.image            = image;
+		b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+		VkDependencyInfo dep = {};
+		dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+		dep.imageMemoryBarrierCount = 1;
+		dep.pImageMemoryBarriers    = &b;
+		vkCmdPipelineBarrier2(cmd, &dep);
+	};
+
+	// GUI writes → copy, then copy → the transition to PRESENT_SRC that follows
+	barrier(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+	        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+
+	VkBufferImageCopy region = {};
+	region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+	region.imageExtent      = { swapchainExtent.width, swapchainExtent.height, 1 };
+	vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_GENERAL, screenshotBuffer, 1, &region);
+
+	barrier(VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_NONE,
+	        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_NONE);
+}
+
+// Writes screenshotBuffer to a PNG file. The frame's commands must be complete.
+void VKRenderer::saveScreenshot(std::string path) {
+	std::vector<uint8_t> pixels(size_t(swapchainExtent.width) * swapchainExtent.height * 4);
+
+	void* mapped;
+	assertSucces(vkMapMemory(device, screenshotMemory, 0, VK_WHOLE_SIZE, 0, &mapped));
+	memcpy(pixels.data(), mapped, pixels.size());
+	vkUnmapMemory(device, screenshotMemory);
+
+	// the swapchain is usually BGRA, PNG wants RGBA. Alpha may be undefined.
+	bool bgra = swapchainFormat == VK_FORMAT_B8G8R8A8_UNORM || swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+	for (size_t i = 0; i < pixels.size(); i += 4) {
+		if (bgra) std::swap(pixels[i + 0], pixels[i + 2]);
+		pixels[i + 3] = 255;
+	}
+
+	if (fs::path(path).has_parent_path()) {
+		fs::create_directories(fs::path(path).parent_path());
+	}
+
+	if (stbi_write_png(path.c_str(), swapchainExtent.width, swapchainExtent.height, 4, pixels.data(), swapchainExtent.width * 4)) {
+		println("saved screenshot {} ({}x{})", path, swapchainExtent.width, swapchainExtent.height);
+	} else {
+		println("ERROR: failed to write screenshot {}", path);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Command buffer recording
 // ---------------------------------------------------------------------------
 
@@ -893,6 +999,10 @@ void VKRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
 		vkCmdBeginRendering(cmd, &ri);
 		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
 		vkCmdEndRendering(cmd);
+	}
+
+	if (!screenshotPath.empty()) {
+		recordScreenshotCopy(cmd, swapchainImages[imageIndex]);
 	}
 
 	// 6. Swapchain: GENERAL → PRESENT_SRC
@@ -1005,6 +1115,14 @@ void VKRenderer::loop(
 		vkResetFences(device, 1, &inFlightFences[currentFrame]);
 
 		// Record command buffer: blit CUDA result + ImGui dynamic rendering
+		// CURAST_SCREENSHOT=<file.png>: screenshot of frame CURAST_SCREENSHOT_FRAME (default 300), then close the window
+		static const char* screenshotEnv = getenv("CURAST_SCREENSHOT");
+		static int64_t screenshotFrame = getenv("CURAST_SCREENSHOT_FRAME") ? atoll(getenv("CURAST_SCREENSHOT_FRAME")) : 300;
+		bool screenshotFromEnv = screenshotEnv != nullptr && frameCount == screenshotFrame;
+		if (screenshotFromEnv) requestScreenshot(screenshotEnv);
+
+		bool takeScreenshot = !screenshotPath.empty();
+
 		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
@@ -1020,6 +1138,14 @@ void VKRenderer::loop(
 		submit.signalSemaphoreCount = 1;
 		submit.pSignalSemaphores    = &renderFinishedSemaphores[imageIndex]; // per-image, not per-frame
 		vkQueueSubmit(graphicsQueue, 1, &submit, inFlightFences[currentFrame]);
+
+		if (takeScreenshot) {
+			vkQueueWaitIdle(graphicsQueue);
+			saveScreenshot(screenshotPath);
+			screenshotPath = "";
+
+			if (screenshotFromEnv) glfwSetWindowShouldClose(window, true);
+		}
 
 		// Present
 		VkPresentInfoKHR presentInfo = {};

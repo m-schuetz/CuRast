@@ -217,9 +217,21 @@ struct VKRenderer {
 	inline static std::vector<VkFence>         inFlightFences;
 	inline static int currentFrame = 0;
 
+	// ---- Screenshots ----
+	inline static std::string    screenshotPath       = "";              // requested screenshot, empty if there is none
+	inline static VkBuffer       screenshotBuffer     = VK_NULL_HANDLE;  // host-visible copy of the swapchain image
+	inline static VkDeviceMemory screenshotMemory     = VK_NULL_HANDLE;
+	inline static VkDeviceSize   screenshotBufferSize = 0;
+
 	// ---- Public API ----
 	static void init();
 	static void destroy();
+
+	// Saves the next presented frame, including the GUI, as a PNG file.
+	// Alternatively, CURAST_SCREENSHOT=<file.png> saves frame CURAST_SCREENSHOT_FRAME (default 300), and then closes the window.
+	inline static void requestScreenshot(std::string path){
+		screenshotPath = path;
+	}
 
 	static void loop(
 		std::function<void(void)> update,
@@ -256,6 +268,8 @@ private:
 	static void cleanupSwapchain();
 
 	static void recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex);
+	static void recordScreenshotCopy(VkCommandBuffer cmd, VkImage image);
+	static void saveScreenshot(std::string path);
 
 public:
 	static uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);

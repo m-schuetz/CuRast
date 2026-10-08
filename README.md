@@ -70,6 +70,8 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds or meshes 
 
   The texture is read from texture.dds, which `tools/clodbuilder/convert_textures.py` creates from the textures written by clodbuilder: BC7-compressed, and combined into an atlas if there are multiple textures (see [tools/clodbuilder](tools/clodbuilder/README.md)). It is decoded in the kernel, so that it can be read from VRAM or from the memory-mapped file.
 
+Screenshots of the window, including the GUI: `CURAST_SCREENSHOT=<file.png> ./CuRast` saves frame 300 (or `CURAST_SCREENSHOT_FRAME`) as PNG, and then closes CuRast. From code, call `VKRenderer::requestScreenshot(path)`.
+
 ### Program
 
 | File | Role |
