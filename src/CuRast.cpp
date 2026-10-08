@@ -915,14 +915,31 @@ vector<u8> encodePng(int width, int height, int numChannels, const void* pixels)
 	return png;
 }
 
+// JPEG file contents, encoded in memory. Alpha is ignored. quality: 1 to 100
+vector<u8> encodeJpg(int width, int height, int numChannels, const void* pixels, int quality){
+	vector<u8> jpg;
+
+	auto append = [](void* context, void* data, int size){
+		vector<u8>* jpg = (vector<u8>*)context;
+		jpg->insert(jpg->end(), (u8*)data, (u8*)data + size);
+	};
+
+	if(!stbi_write_jpg_to_func(append, &jpg, width, height, numChannels, pixels, quality)){
+		jpg.clear();
+	}
+
+	return jpg;
+}
+
 // "Capture TD" (toolbar): Renders the current view once more at 1920x1080, and at 1/2, 1/4 and 1/8 of that, 
 // independent of the window size. Each resolution is rendered on its own, e.g. with the LODs for that resolution. 
 // If a Potree point cloud is loaded, all resolutions are rendered with point budgets of 1M, 5M and 20M.
 // For each rendering, saves
 // - td/<dataset>_<n>[_<budget>]_color_<width>x<height>.png: the colors as displayed, but without EDL and GUI, and with 
 //   a transparent background.
-// - td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.png: view-space depth as colors of DEPTH_GRADIENT, from its first 
-//   color at the image's minimum depth to its last color at the maximum depth. Transparent background.
+// - td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.jpg: view-space depth as colors of DEPTH_GRADIENT, from its first 
+//   color at the image's minimum depth to its last color at the maximum depth. Black background, as JPEG has no alpha.
+//   JPEG quality 95, so colors are approximate.
 // - td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.bin: view-space depth as 32 bit floats, without any header. 
 //   Rows from top to bottom, like the images. Background pixels are +infinity.
 // <dataset> is the name of the first loaded dataset, see getFirstDatasetName(). <n> is the first number without a 
@@ -1020,7 +1037,7 @@ void captureTd(Scene* scene, View view){
 			}
 		}
 
-		// RGBA. The image's depth range becomes the gradient, the background is transparent.
+		// The image's depth range becomes the gradient, the background is black.
 		vector<u32> depthColors(width * height);
 		float range = maxDepth > minDepth ? maxDepth - minDepth : 0.0f;
 		for(int i = 0; i < width * height; i++){
@@ -1031,16 +1048,16 @@ void captureTd(Scene* scene, View view){
 
 		string name = format("td/{}{:04}{}", namePrefix, number, pass.label);
 		string colorPath = format("{}_color_{}x{}.png", name, width, height);
-		string depthPath = format("{}_depth_{}x{}.png", name, width, height);
+		string depthPath = format("{}_depth_{}x{}.jpg", name, width, height);
 		string depthBinPath = format("{}_depth_{}x{}.bin", name, width, height);
 
 		// each file appears only once it is complete, see writeFileAtomically()
 		vector<u8> colorPng = encodePng(width, height, 4, color.data());
-		vector<u8> depthPng = encodePng(width, height, 4, depthColors.data());
+		vector<u8> depthJpg = encodeJpg(width, height, 4, depthColors.data(), 95);
 
-		bool success = !colorPng.empty() && !depthPng.empty()
+		bool success = !colorPng.empty() && !depthJpg.empty()
 		            && writeFileAtomically(colorPath, colorPng.data(), colorPng.size())
-		            && writeFileAtomically(depthPath, depthPng.data(), depthPng.size())
+		            && writeFileAtomically(depthPath, depthJpg.data(), depthJpg.size())
 		            && writeFileAtomically(depthBinPath, depth.data(), byteSizeOf(depth));
 
 		if(success){

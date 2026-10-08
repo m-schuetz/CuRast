@@ -163,7 +163,7 @@ void CuRast::makeToolbar(){
 				if(ImGui::Button("Capture TD")){
 					editor->requestTdCapture = true;
 				}
-				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Renders the current view at 1920x1080, 960x540, 480x270 and 240x135 (with Potree point clouds, each with point budgets of 1M, 5M and 20M), and saves color (without EDL, transparent background) and depth (minimum to maximum as a color gradient with transparent background, and as raw 32 bit floats) as td/<dataset>_<n>[_<budget>]_color_<width>x<height>.png, td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.png and .bin, with the name of the first loaded dataset.");
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Renders the current view at 1920x1080, 960x540, 480x270 and 240x135 (with Potree point clouds, each with point budgets of 1M, 5M and 20M), and saves color (without EDL, transparent background) and depth (minimum to maximum as a color gradient on black as JPEG, and as raw 32 bit floats) as td/<dataset>_<n>[_<budget>]_color_<width>x<height>.png, td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.jpg and .bin, with the name of the first loaded dataset.");
 
 				ImGui::Text("Cluster colors: ");
 				ImGui::SameLine();
@@ -232,7 +232,7 @@ void CuRast::makeToolbar(){
 
 				float pointBudgetM = float(CuRastSettings::pointBudget) / 1'000'000.0f;
 				ImGui::SetNextItemWidth(200.0f);
-				if(ImGui::SliderFloat("Point Budget", &pointBudgetM, 1.0f, 20.0f, "%.1f M")){
+				if(ImGui::SliderFloat("Point Budget", &pointBudgetM, 1.0f, 50.0f, "%.1f M")){
 					CuRastSettings::pointBudget = int64_t(double(pointBudgetM) * 1'000'000.0);
 				}
 				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of points rendered from Potree octrees.");
