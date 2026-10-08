@@ -3,7 +3,9 @@
 //    i.e., clusters whose own error is small enough on screen while the error of the coarser clusters that
 //    replace them is not. Culls them against the view frustum and appends the remaining ones to a list.
 // 2. kernel_drawClusters: One block per visible cluster. Transforms the cluster's vertices into shared memory,
-//    then rasterizes its triangles. Small triangles are rasterized by one thread each, larger ones by the whole block.
+//    then rasterizes its triangles. Small triangles are rasterized by one thread each. Larger ones are stashed in 
+//    shared memory. Once its threads are done with their small triangles, each warp repeatedly takes the next 
+//    stashed triangle, and rasterizes it with all 32 threads.
 //
 // The texture is BC7-compressed and decoded here (see bc7.cuh), so it can be read from VRAM or from a memory-mapped file.
 //
@@ -45,8 +47,9 @@ using glm::vec4;
 // One thread per vertex and per triangle of a cluster
 constexpr int CLUSTER_BLOCK_SIZE = 128;
 
-// Triangles with larger screen-space bounding boxes are rasterized by all threads of the block
-constexpr int MAX_THREAD_TRIANGLE_PIXELS = 64;
+// Triangles with larger screen-space bounding boxes are rasterized by all threads of a warp. 
+// 16 was the fastest of 4 to 128 pixels on odm_wietrznia (RTX 4090), both for distant and close views.
+constexpr int MAX_THREAD_TRIANGLE_PIXELS = 16;
 
 __constant__ u32 LEVEL_COLORS[] = {
 	0xff4b19e6, 0xff4bb43c, 0xff19e1ff, 0xffc88200, 0xff3082f5, 0xffb41e91, 0xfff0f046, 0xffe632f0,
@@ -283,14 +286,21 @@ void kernel_drawClusters(
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
+	auto warp = cg::tiled_partition<32>(block);
+
 	__shared__ ScreenVertex sh_vertices[CLUSTER_BLOCK_SIZE];
 	__shared__ float2 sh_uvs[CLUSTER_BLOCK_SIZE];
-	__shared__ u32 sh_largeTriangles[CLUSTER_BLOCK_SIZE];
+
+	// Larger triangles of the current cluster. Raw storage, because __shared__ variables can't have constructors.
+	__shared__ alignas(16) u8 sh_largeTriangleStorage[CLUSTER_BLOCK_SIZE * sizeof(Triangle)];
 	__shared__ u32 sh_numLargeTriangles;
+	__shared__ u32 sh_nextLargeTriangle;
+	Triangle* sh_largeTriangles = reinterpret_cast<Triangle*>(sh_largeTriangleStorage);
 
 	mat4 transform = target.proj * mesh.worldView;
 	u32 numVisibleClusters = counters->numVisibleClusters;
 	u32 tid = block.thread_rank();
+	u32 lane = warp.thread_rank();
 
 	// estimated number of distinct texels sampled by this thread, see Triangle::texelsPerPixel
 	float sampledTexels = 0.0f;
@@ -318,7 +328,10 @@ void kernel_drawClusters(
 			sh_uvs[tid] = make_float2(uv.x, uv.y);
 		}
 
-		if(tid == 0) sh_numLargeTriangles = 0;
+		if(tid == 0){
+			sh_numLargeTriangles = 0;
+			sh_nextLargeTriangle = 0;
+		}
 
 		block.sync();
 
@@ -329,36 +342,45 @@ void kernel_drawClusters(
 			flatColor = (clusterIndex * 2654435761u) | 0xff000000;
 		}
 
-		// small triangles: one thread each. Larger ones are queued for the whole block.
-		if(tid < cluster.triangleCount){
-			Triangle t;
-			if(setupTriangle(t, tid, cluster, sh_vertices, sh_uvs, mesh, target)){
-				int numPixels = (t.maxX - t.minX + 1) * (t.maxY - t.minY + 1);
+		Triangle t;
+		bool visible = tid < cluster.triangleCount && setupTriangle(t, tid, cluster, sh_vertices, sh_uvs, mesh, target);
+		bool large = visible && (t.maxX - t.minX + 1) * (t.maxY - t.minY + 1) > MAX_THREAD_TRIANGLE_PIXELS;
 
-				if(numPixels <= MAX_THREAD_TRIANGLE_PIXELS){
-					for(int y = t.minY; y <= t.maxY; y++)
-					for(int x = t.minX; x <= t.maxX; x++){
-						if(drawPixel(t, x, y, flatColor, mesh, target)) sampledTexels += t.texelsPerPixel;
-					}
-				}else{
-					u32 slot = atomicAdd(&sh_numLargeTriangles, 1);
-					sh_largeTriangles[slot] = tid;
-				}
+		// stash larger triangles, with one atomic per warp
+		u32 largeMask = warp.ballot(large);
+		u32 warpOffset = 0;
+		if(lane == 0 && largeMask != 0) warpOffset = atomicAdd(&sh_numLargeTriangles, __popc(largeMask));
+		warpOffset = warp.shfl(warpOffset, 0);
+		if(large){
+			sh_largeTriangles[warpOffset + __popc(largeMask & ((1u << lane) - 1))] = t;
+		}
+
+		// all triangles are set up and stashed
+		block.sync();
+
+		// small triangles: one thread each
+		if(visible && !large){
+			for(int y = t.minY; y <= t.maxY; y++)
+			for(int x = t.minX; x <= t.maxX; x++){
+				if(drawPixel(t, x, y, flatColor, mesh, target)) sampledTexels += t.texelsPerPixel;
 			}
 		}
 
-		block.sync();
+		// larger triangles: each warp repeatedly takes the next stashed triangle, and processes its pixels with all threads
+		u32 numLarge = sh_numLargeTriangles;
+		while(true){
+			u32 j = 0;
+			if(lane == 0) j = atomicAdd(&sh_nextLargeTriangle, 1);
+			j = warp.shfl(j, 0);
+			if(j >= numLarge) break;
 
-		// larger triangles: all threads of the block process the pixels of one triangle at a time
-		for(u32 j = 0; j < sh_numLargeTriangles; j++){
-			Triangle t;
-			setupTriangle(t, sh_largeTriangles[j], cluster, sh_vertices, sh_uvs, mesh, target);
+			Triangle large = sh_largeTriangles[j];
 
-			int width = t.maxX - t.minX + 1;
-			int numPixels = width * (t.maxY - t.minY + 1);
+			int width = large.maxX - large.minX + 1;
+			int numPixels = width * (large.maxY - large.minY + 1);
 
-			for(int pixel = tid; pixel < numPixels; pixel += CLUSTER_BLOCK_SIZE){
-				if(drawPixel(t, t.minX + pixel % width, t.minY + pixel / width, flatColor, mesh, target)) sampledTexels += t.texelsPerPixel;
+			for(int pixel = lane; pixel < numPixels; pixel += 32){
+				if(drawPixel(large, large.minX + pixel % width, large.minY + pixel / width, flatColor, mesh, target)) sampledTexels += large.texelsPerPixel;
 			}
 		}
 
@@ -366,7 +388,6 @@ void kernel_drawClusters(
 		block.sync();
 	}
 
-	auto warp = cg::tiled_partition<32>(block);
 	float warpTexels = cg::reduce(warp, sampledTexels, cg::plus<float>());
 	if(warp.thread_rank() == 0 && warpTexels > 0.0f){
 		atomicAdd(&counters->textureTexels, warpTexels);
