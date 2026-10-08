@@ -25,17 +25,24 @@ void launch_resolveColorbufferToSurface(
 // transparentBackground: empty pixels are (0, 0, 0, 0) instead of backgroundColor.
 void launch_resolveColorbufferToImage(const RenderTarget& target, uint32_t* image, bool enableEDL, uint32_t backgroundColor, bool transparentBackground);
 
+// The point cloud kernels draw in one of the PointPasses, see points.cuh
+
 // laspoints.cu
 void launch_drawLasPoints(
-	const RenderTarget& target, uint8_t* points, uint64_t numPoints,
+	const RenderTarget& target, PointPass pass, uint8_t* points, uint64_t numPoints,
 	uint32_t pointRecordSize, int32_t offset_rgb,
 	const glm::vec3& scale, const glm::mat4& worldView);
 
 // potreeFileRenderer.cu
-void launch_drawPotreeFileNodes(const RenderTarget& target, PotreeNode* nodes, uint64_t numNodes);
+void launch_drawPotreeFileNodes(const RenderTarget& target, PointPass pass, PotreeNode* nodes, uint64_t numNodes);
 
 // potreeDirectStorageRenderer.cu
-void launch_drawPotreeDirectStorageNodes(const RenderTarget& target, PotreeNode* nodes, uint64_t numNodes);
+void launch_drawPotreeDirectStorageNodes(const RenderTarget& target, PointPass pass, PotreeNode* nodes, uint64_t numNodes);
+
+// pointsHighQuality.cu: high-quality shading of point clouds, i.e., the passes POINT_PASS_DEPTH and POINT_PASS_ACCUMULATE.
+// Clear before the depth pass, and normalize after the accumulation pass.
+void launch_clearPointBuffers(const RenderTarget& target);
+void launch_normalizePoints(const RenderTarget& target);
 
 // trianglesClustered.cu
 // The counters must be zero before selection.

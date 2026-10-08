@@ -34,7 +34,23 @@ struct RenderTarget{
 	int width;
 	int height;
 	mat4 proj;
+
+	// Own framebuffers of the high-quality shading of point clouds, see PointPass. Only used by its passes.
+	uint32_t* pointDepthbuffer;   // per pixel: view depth of the closest point, as float bits
+	uint64_t* pointAccumbuffer;   // 2 per pixel: red | green << 32, and blue | count << 32
 };
+
+// How the point cloud kernels write their points into a RenderTarget
+enum PointPass : int {
+	POINT_PASS_COLOR      = 0, // depth and color of the closest point into the colorbuffer, with 64 bit atomicMin
+
+	// High-quality shading (CuRastSettings::highQualityShading):
+	POINT_PASS_DEPTH      = 1, // depth of the closest point into pointDepthbuffer, with 32 bit atomicMin
+	POINT_PASS_ACCUMULATE = 2, // sums up colors and counts of points close to that depth in pointAccumbuffer, with atomicAdd
+};
+
+// High-quality shading blends the points up to this far behind the closest point of a pixel, relative to its depth
+constexpr float HQ_POINT_DEPTH_RANGE = 0.01f;
 
 
 struct PotreeNode{

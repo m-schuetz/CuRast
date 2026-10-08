@@ -22,6 +22,7 @@ enum ClusterSelection : int {
 
 struct CuRastSettings{
 	static inline bool enableEDL = true;
+	static inline bool highQualityShading = false; // point clouds: blend the points close to the closest one of each pixel
 	static inline bool enableFrustumCulling = true;
 	static inline bool hideGUI = false;
 

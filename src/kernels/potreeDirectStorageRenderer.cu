@@ -29,6 +29,7 @@ namespace cg = cooperative_groups;
 #include "../types.h"
 #include "./kernels.h"
 #include "../Timer.h"
+#include "./points.cuh"
 
 using glm::ivec2;
 using glm::vec4;
@@ -46,6 +47,7 @@ __device__ inline i32 readI32(const u8* p){
 extern "C" __global__
 void kernel_drawPotreeDirectStorageNodes(
 	RenderTarget target,
+	PointPass pass,
 	PotreeNode* nodes,  // node.data points to the node's bytes in VRAM
 	u64 numNodes
 ) {
@@ -97,6 +99,8 @@ void kernel_drawPotreeDirectStorageNodes(
 
 			i32 pixelID = pixelCoords.x + target.width * pixelCoords.y;
 
+			if(!depthTestPoint(target, pass, pixelID, depth)) continue;
+
 			u32 color = 0xff888888;
 			if(hasColor){
 				// rgb is stored as 16 bit, but some files only use the 8 bit range
@@ -112,12 +116,7 @@ void kernel_drawPotreeDirectStorageNodes(
 				color = r | (g << 8) | (b << 16) | (0xffu << 24);
 			}
 
-			u64 udepth = __float_as_uint(depth);
-			u64 fragment = udepth << 32 | color;
-
-			if(fragment < target.colorbuffer[pixelID]){
-				atomicMin((unsigned long long*)&target.colorbuffer[pixelID], (unsigned long long)fragment);
-			}
+			writePoint(target, pass, pixelID, depth, color);
 		}
 	}
 
@@ -129,12 +128,12 @@ void kernel_drawPotreeDirectStorageNodes(
 
 static bool registered = registerKernel("potreeDirectStorageRenderer.cu", "kernel_drawPotreeDirectStorageNodes", (const void*)kernel_drawPotreeDirectStorageNodes);
 
-void launch_drawPotreeDirectStorageNodes(const RenderTarget& target, PotreeNode* nodes, uint64_t numNodes){
+void launch_drawPotreeDirectStorageNodes(const RenderTarget& target, PointPass pass, PotreeNode* nodes, uint64_t numNodes){
 	if(numNodes == 0) return;
 
 	// one block per node
 	auto start = Timer::recordCudaTimestamp();
-	kernel_drawPotreeDirectStorageNodes<<<uint32_t(numNodes), 256>>>(target, nodes, numNodes);
+	kernel_drawPotreeDirectStorageNodes<<<uint32_t(numNodes), 256>>>(target, pass, nodes, numNodes);
 	checkKernelLaunch("kernel_drawPotreeDirectStorageNodes");
-	Timer::recordDuration("kernel_drawPotreeDirectStorageNodes", start, Timer::recordCudaTimestamp());
+	Timer::recordDuration(pointPassLabel("kernel_drawPotreeDirectStorageNodes", pass), start, Timer::recordCudaTimestamp());
 }

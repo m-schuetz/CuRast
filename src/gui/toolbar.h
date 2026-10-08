@@ -163,7 +163,7 @@ void CuRast::makeToolbar(){
 				if(ImGui::Button("Capture TD")){
 					editor->requestTdCapture = true;
 				}
-				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Renders the current view at 1920x1080, 960x540, 480x270 and 240x135 (with Potree point clouds, each with point budgets of 1M, 5M and 20M), and saves color (without EDL, transparent background) and depth (minimum to maximum as a color gradient on black as JPEG, and as raw 32 bit floats) as td/<dataset>_<n>[_<budget>]_color_<width>x<height>.png, td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.jpg and .bin, with the name of the first loaded dataset.");
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Renders the current view at 1920x1080, 960x540, 480x270 and 240x135 (with Potree point clouds, each with point budgets of 1M, 5M and 50M, and always with HQ shading), and saves color (without EDL, transparent background) and depth (minimum to maximum as a color gradient on black as JPEG, and as raw 32 bit floats) as td/<dataset>_<n>[_<budget>]_color_<width>x<height>.png, td/<dataset>_<n>[_<budget>]_depth_<width>x<height>.jpg and .bin, with the name of the first loaded dataset.");
 
 				ImGui::Text("Cluster colors: ");
 				ImGui::SameLine();
@@ -203,6 +203,9 @@ void CuRast::makeToolbar(){
 				startSection("Appearance");
 
 				ImGui::Checkbox("EDL", &CuRastSettings::enableEDL);
+				ImGui::SameLine();
+				ImGui::Checkbox("HQ Shading", &CuRastSettings::highQualityShading);
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Point clouds: Each pixel shows the average color of the points up to 1%% behind the closest one, instead of only the closest one. Draws the points twice, first their depth, then their colors.");
 				
 				ImGui::SameLine();
 				ImGui::Text("Background:");

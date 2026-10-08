@@ -249,7 +249,14 @@ int executeDirectStorageReads(const vector<DirectStorageRead>& reads){
 	return numFailed;
 }
 
-// Renders PotreeFileNodes. 
+// The octree nodes of PotreeFileNodes to draw, see selectPotreeNodes()
+struct PotreeNodes{
+	PotreeNode* nodes = nullptr;  // in VRAM
+	u64 numNodes = 0;
+	bool directStorage = false;   // whether the nodes' points were read into VRAM, or are in the memory-mapped octree.bin
+};
+
+// Selects the octree nodes of PotreeFileNodes to render. drawPotreeNodes() then draws them, once per PointPass.
 // - Traverses the octrees of all potree files from largest to smallest nodes in screen space, 
 //   skipping nodes outside the view frustum, until the point budget is reached. 
 // - Points are rendered in a coordinate system centered at the bounding box of each potree file.
@@ -258,15 +265,15 @@ int executeDirectStorageReads(const vector<DirectStorageRead>& reads){
 //       Requires GPU access to pageable host memory (e.g. HMM on linux).
 //     - Direct storage: Visible nodes are read from octree.bin into VRAM via cuFile each frame, 
 //       without caching, and rendered from there.
-void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
+PotreeNodes selectPotreeNodes(Scene* scene, View view, const RenderTarget& target){
 
 	u64 pointBudget = CuRastSettings::pointBudget;
 	bool directStorage = CuRastSettings::potreeRenderPath == POTREE_DIRECT_STORAGE;
 
 	if(directStorage){
-		if(!initCuFile()) return;
+		if(!initCuFile()) return {};
 	}else{
-		if(!canAccessPageableMemory()) return;
+		if(!canAccessPageableMemory()) return {};
 	}
 
 	vector<PotreeFileNode*> files;
@@ -284,7 +291,7 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 		files.push_back(file);
 	});
 
-	if(files.empty()) return;
+	if(files.empty()) return {};
 
 	if(directStorage){
 		// The buffer holds the visible points, plus padding because reads are aligned to SSD pages. 
@@ -486,36 +493,39 @@ void drawPotreeFiles(Scene* scene, View view, RenderTarget& target){
 		dvlist.push_back({"direct storage buffer", format("{:.1f} MB", double(directStorageBuffer.size) / 1'000'000.0)});
 	}
 
+	// upload list of visible nodes
+	static PotreeNode* nodes = nullptr;
+	static u64 capacity = 0;
+	if(visibleNodes.size() > capacity){
+		if(nodes != nullptr) MemoryManager::free(nodes);
+
+		capacity = std::max<u64>(2 * visibleNodes.size(), 1'000);
+		nodes = (PotreeNode*)MemoryManager::alloc(capacity * sizeof(PotreeNode), "potree visible nodes");
+	}
 	if(visibleNodes.size() > 0){
-
-		// upload list of visible nodes
-		static PotreeNode* nodes = nullptr;
-		static u64 capacity = 0;
-		if(visibleNodes.size() > capacity){
-			if(nodes != nullptr) MemoryManager::free(nodes);
-
-			capacity = std::max<u64>(2 * visibleNodes.size(), 1'000);
-			nodes = (PotreeNode*)MemoryManager::alloc(capacity * sizeof(PotreeNode), "potree visible nodes");
-		}
 		cudaMemcpy(nodes, visibleNodes.data(), byteSizeOf(visibleNodes), cudaMemcpyHostToDevice);
-
-		if(directStorage){
-			launch_drawPotreeDirectStorageNodes(target, nodes, visibleNodes.size());
-		}else{
-			launch_drawPotreeFileNodes(target, nodes, visibleNodes.size());
-		}
 	}
 
 	auto& dvlist = Runtime::debugValueList;
 	dvlist.push_back({"potree nodes", format("{:L}", visibleNodes.size())});
 	dvlist.push_back({"potree points", format("{:L}", numVisiblePoints)});
+
+	return {nodes, visibleNodes.size(), directStorage};
 }
 
-// Renders LasfileNodes directly from their memory-mapped files. 
-// Requires GPU access to pageable host memory (e.g. HMM on linux).
-void drawLasPoints(Scene* scene, View view, RenderTarget& target){
+void drawPotreeNodes(const PotreeNodes& potree, const RenderTarget& target, PointPass pass){
+	if(potree.directStorage){
+		launch_drawPotreeDirectStorageNodes(target, pass, potree.nodes, potree.numNodes);
+	}else{
+		launch_drawPotreeFileNodes(target, pass, potree.nodes, potree.numNodes);
+	}
+}
 
-	if(!canAccessPageableMemory()) return;
+// Renders LasfileNodes directly from their memory-mapped files, and returns the number of rendered points. 
+// Requires GPU access to pageable host memory (e.g. HMM on linux).
+u64 drawLasPoints(Scene* scene, View view, const RenderTarget& target, PointPass pass){
+
+	if(!canAccessPageableMemory()) return 0;
 	
 	vector<LasfileNode*> nodes;
 	scene->forEach<LasfileNode>([&](LasfileNode* node){
@@ -535,14 +545,69 @@ void drawLasPoints(Scene* scene, View view, RenderTarget& target){
 		i32 offset_rgb         = node->offset_rgb;
 		vec3 scale             = node->scale;
 		
-		launch_drawLasPoints(target, points, numPoints, pointRecordSize, offset_rgb, scale, worldView);
+		launch_drawLasPoints(target, pass, points, numPoints, pointRecordSize, offset_rgb, scale, worldView);
 		
 		totalPoints += std::min<u64>(numPoints, MAX_LAS_POINTS);
 	}
-	
+
+	return totalPoints;
+}
+
+// Own framebuffers of the high-quality shading of point clouds, allocated on first use. 
+// Render targets are drawn one after the other, so they share them.
+CudaBuffer* pointDepthbuffer = nullptr;
+CudaBuffer* pointAccumbuffer = nullptr;
+
+// Draws LasfileNodes and PotreeFileNodes into target.colorbuffer: 
+// - Default: the closest point of each pixel, with 64 bit atomicMin of depth and color (POINT_PASS_COLOR).
+// - High-quality shading (CuRastSettings::highQualityShading): the average color of the points close to the closest 
+//   point, see pointsHighQuality.cu. All point clouds are drawn with POINT_PASS_DEPTH into the point depthbuffer, and 
+//   then with POINT_PASS_ACCUMULATE into the accumulation buffer. kernel_normalizePoints then writes the averaged colors, 
+//   with the closest depth, into the colorbuffer.
+void drawPointClouds(Scene* scene, View view, const RenderTarget& target){
+
+	bool hasPointClouds = false;
+	scene->forEach<LasfileNode>([&](LasfileNode* node){ hasPointClouds = true; });
+	scene->forEach<PotreeFileNode>([&](PotreeFileNode* node){ hasPointClouds = true; });
+
+	bool highQuality = CuRastSettings::highQualityShading && hasPointClouds;
+
+	RenderTarget pointTarget = target;
+	vector<PointPass> passes = {POINT_PASS_COLOR};
+
+	if(highQuality){
+		u64 numPixels = u64(target.width) * u64(target.height);
+
+		if(pointDepthbuffer == nullptr){
+			pointDepthbuffer = MemoryManager::allocBuffer(4 * numPixels, "point depthbuffer (high-quality shading)");
+			pointAccumbuffer = MemoryManager::allocBuffer(16 * numPixels, "point accumulation buffer (high-quality shading)");
+		}
+
+		// resizing may reallocate the buffers
+		pointDepthbuffer->resize(4 * numPixels);
+		pointAccumbuffer->resize(16 * numPixels);
+		pointTarget.pointDepthbuffer = (u32*)pointDepthbuffer->ptr;
+		pointTarget.pointAccumbuffer = (u64*)pointAccumbuffer->ptr;
+
+		launch_clearPointBuffers(pointTarget);
+		passes = {POINT_PASS_DEPTH, POINT_PASS_ACCUMULATE};
+	}
+
+	// the same nodes in all passes
+	PotreeNodes potree = selectPotreeNodes(scene, view, pointTarget);
+
+	u64 numLasPoints = 0;
+	for(PointPass pass : passes){
+		numLasPoints = drawLasPoints(scene, view, pointTarget, pass);
+		drawPotreeNodes(potree, pointTarget, pass);
+	}
+
+	if(highQuality){
+		launch_normalizePoints(pointTarget);
+	}
+
 	auto& dvlist = Runtime::debugValueList;
-	dvlist.push_back({"num las points", format("{:L}", totalPoints)});
-	
+	dvlist.push_back({"num las points", format("{:L}", numLasPoints)});
 }
 
 // What selectClustersBvh() visited and selected
@@ -933,7 +998,8 @@ vector<u8> encodeJpg(int width, int height, int numChannels, const void* pixels,
 
 // "Capture TD" (toolbar): Renders the current view once more at 1920x1080, and at 1/2, 1/4 and 1/8 of that, 
 // independent of the window size. Each resolution is rendered on its own, e.g. with the LODs for that resolution. 
-// If a Potree point cloud is loaded, all resolutions are rendered with point budgets of 1M, 5M and 20M.
+// If a Potree point cloud is loaded, all resolutions are rendered with point budgets of 1M, 5M and 50M.
+// Point clouds are always rendered with high-quality shading, independent of CuRastSettings::highQualityShading.
 // For each rendering, saves
 // - td/<dataset>_<n>[_<budget>]_color_<width>x<height>.png: the colors as displayed, but without EDL and GUI, and with 
 //   a transparent background.
@@ -983,7 +1049,7 @@ void captureTd(Scene* scene, View view){
 	i64 pointBudget = CuRastSettings::pointBudget;
 	vector<Pass> passes = {{pointBudget, ""}};
 	if(hasPotree){
-		passes = {{1'000'000, "_1M"}, {5'000'000, "_5M"}, {20'000'000, "_20M"}};
+		passes = {{1'000'000, "_1M"}, {5'000'000, "_5M"}, {50'000'000, "_50M"}};
 	}
 
 	// keep these passes out of the overlay and the timings
@@ -992,6 +1058,9 @@ void captureTd(Scene* scene, View view){
 	bool timerEnabled = Timer::enabled;
 	Runtime::measureTimings = false;
 	Timer::enabled = false;
+
+	bool highQualityShading = CuRastSettings::highQualityShading;
+	CuRastSettings::highQualityShading = true;
 
 	// same camera, but with the aspect ratio of the capture
 	shared_ptr<Camera> camera = VKRenderer::camera;
@@ -1009,10 +1078,11 @@ void captureTd(Scene* scene, View view){
 		target.width = width;
 		target.height = height;
 		target.proj = view.proj;
+		target.pointDepthbuffer = nullptr;
+		target.pointAccumbuffer = nullptr;
 
 		launch_clearFramebuffer(target.colorbuffer, width * height, 0xff000000, Infinity);
-		drawLasPoints(scene, view, target);
-		drawPotreeFiles(scene, view, target);
+		drawPointClouds(scene, view, target);
 		drawClusteredMeshes(scene, view, target);
 		launch_resolveColorbufferToImage(target, gpu_image, false, getBackgroundColor(), true);
 
@@ -1068,6 +1138,7 @@ void captureTd(Scene* scene, View view){
 	}
 
 	CuRastSettings::pointBudget = pointBudget;
+	CuRastSettings::highQualityShading = highQualityShading;
 	Runtime::debugValueList = debugValueList;
 	Runtime::measureTimings = measureTimings;
 	Timer::enabled = timerEnabled;
@@ -1084,6 +1155,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	target.width = supersamplingFactor * view.framebuffer->width;
 	target.height = supersamplingFactor * view.framebuffer->height;
 	target.proj = view.proj;
+	target.pointDepthbuffer = nullptr; // see drawPointClouds()
+	target.pointAccumbuffer = nullptr;
 
 	int numPixels = target.width * target.height;
 
@@ -1106,8 +1179,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		launch_clearFramebuffer(target.colorbuffer, numPixels, clearColor, clearDepth);
 	}
 
-	drawLasPoints(scene, view, target);
-	drawPotreeFiles(scene, view, target);
+	drawPointClouds(scene, view, target);
 	drawClusteredMeshes(scene, view, target);
 
 	int mouse_X = Runtime::mousePosition.x;

@@ -61,8 +61,8 @@ void initScene() {
 
 	// string file = "/home/mschuetz/dev/resources/morro_bay_73M.laz_converted";
 	// string file = "/run/media/mschuetz/Lightning/resources/pointclouds/iconem/Meroe_NorthNecropolis_684M.las_converted";
-	// string file = "/run/media/mschuetz/Lightning/resources/pointclouds/CA13_converted";
-	string file = "/run/media/mschuetz/Paper/resources/potree/SaintRoman_cleaned_1094M_202003";
+	 string file = "/run/media/mschuetz/Lightning/resources/pointclouds/CA13_converted";
+	//string file = "/run/media/mschuetz/Paper/resources/potree/retz";
 	shared_ptr<PotreeFileNode> node = make_shared<PotreeFileNode>(file, "potree");
 	scene.root->children.push_back(node);
 

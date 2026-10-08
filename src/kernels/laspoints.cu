@@ -29,6 +29,7 @@ namespace cg = cooperative_groups;
 #include "../types.h"
 #include "./kernels.h"
 #include "../Timer.h"
+#include "./points.cuh"
 
 using glm::ivec2;
 using glm::vec4;
@@ -46,6 +47,7 @@ __device__ inline i32 readI32(const u8* p){
 extern "C" __global__
 void kernel_drawLasPoints(
 	RenderTarget target,
+	PointPass pass,
 	u8* points,             // memory-mapped las file, pointing to the first point record
 	u64 numPoints,
 	u32 pointRecordSize,
@@ -92,6 +94,8 @@ void kernel_drawLasPoints(
 
 		i32 pixelID = pixelCoords.x + target.width * pixelCoords.y;
 
+		if(!depthTestPoint(target, pass, pixelID, depth)) continue;
+
 		u32 color = 0xff888888;
 		if(offset_rgb >= 0){
 			// rgb is stored as 16 bit, but some files only use the 8 bit range
@@ -106,12 +110,7 @@ void kernel_drawLasPoints(
 			color = r | (g << 8) | (b << 16) | (0xffu << 24);
 		}
 
-		u64 udepth = __float_as_uint(depth);
-		u64 fragment = udepth << 32 | color;
-
-		if(fragment < target.colorbuffer[pixelID]){
-			atomicMin((unsigned long long*)&target.colorbuffer[pixelID], (unsigned long long)fragment);
-		}
+		writePoint(target, pass, pixelID, depth, color);
 	}
 
 }
@@ -123,7 +122,7 @@ void kernel_drawLasPoints(
 static bool registered = registerKernel("laspoints.cu", "kernel_drawLasPoints", (const void*)kernel_drawLasPoints);
 
 void launch_drawLasPoints(
-	const RenderTarget& target, uint8_t* points, uint64_t numPoints, 
+	const RenderTarget& target, PointPass pass, uint8_t* points, uint64_t numPoints, 
 	uint32_t pointRecordSize, int32_t offset_rgb, 
 	const glm::vec3& scale, const glm::mat4& worldView
 ){
@@ -138,7 +137,7 @@ void launch_drawLasPoints(
 	}();
 
 	auto start = Timer::recordCudaTimestamp();
-	kernel_drawLasPoints<<<numBlocks, blockSize>>>(target, points, numPoints, pointRecordSize, offset_rgb, scale, worldView);
+	kernel_drawLasPoints<<<numBlocks, blockSize>>>(target, pass, points, numPoints, pointRecordSize, offset_rgb, scale, worldView);
 	checkKernelLaunch("kernel_drawLasPoints");
-	Timer::recordDuration("kernel_drawLasPoints", start, Timer::recordCudaTimestamp());
+	Timer::recordDuration(pointPassLabel("kernel_drawLasPoints", pass), start, Timer::recordCudaTimestamp());
 }
