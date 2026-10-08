@@ -72,6 +72,8 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds or meshes 
 
 Screenshots of the window, including the GUI: `CURAST_SCREENSHOT=<file.png> ./CuRast` saves frame 300 (or `CURAST_SCREENSHOT_FRAME`) as PNG, and then closes CuRast. From code, call `VKRenderer::requestScreenshot(path)`.
 
+The "Capture TD" button (toolbar, Dev) renders the current view at 1920x1080, 960x540, 480x270 and 240x135, and saves `td/<dataset>_<n>_color_<width>x<height>.png` (as displayed, but without EDL and GUI, and with a transparent background), `td/<dataset>_<n>_depth_<width>x<height>.png` (view-space depth as colors of ColorBrewer's "Spectral" gradient, from dark red at the image's minimum to purple at its maximum depth, with a transparent background) and `td/<dataset>_<n>_depth_<width>x<height>.bin` (view-space depth as 32 bit floats, row by row from the top, without header, background is +infinity) for each, relative to the working directory. `<dataset>` is the name of the first loaded dataset (file name without extension, or folder name). Each press saves the next free number for that dataset.
+
 ### Program
 
 | File | Role |

@@ -121,6 +121,7 @@ struct CuRast{
 	Scene scene;
 
 	bool requestInitScene = false;
+	bool requestTdCapture = false;  // "Capture TD" button, see captureTd() in CuRast.cpp
 
 	static void setup();
 

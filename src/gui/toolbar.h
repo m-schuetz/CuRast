@@ -159,6 +159,12 @@ void CuRast::makeToolbar(){
 					glfwSetClipboardString(nullptr, str.c_str());
 				}
 
+				ImGui::SameLine();
+				if(ImGui::Button("Capture TD")){
+					editor->requestTdCapture = true;
+				}
+				if(ImGui::IsItemHovered()) ImGui::SetTooltip("Renders the current view at 1920x1080, 960x540, 480x270 and 240x135, and saves color (without EDL, transparent background) and depth (minimum to maximum as a color gradient with transparent background, and as raw 32 bit floats) as td/<dataset>_<n>_color_<width>x<height>.png, td/<dataset>_<n>_depth_<width>x<height>.png and .bin, with the name of the first loaded dataset.");
+
 				ImGui::Text("Cluster colors: ");
 				ImGui::SameLine();
 				ImGui::RadioButton("Texture##clusterColor", &CuRastSettings::clusterColorMode, CLUSTER_COLOR_TEXTURE);

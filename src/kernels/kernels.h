@@ -21,6 +21,9 @@ void launch_resolveColorbufferToSurface(
 	const RenderTarget& target, cudaSurfaceObject_t surface,
 	int width, int height, int mouseX, int mouseY,
 	bool enableEDL, bool showInset, uint32_t backgroundColor);
+// image: RGBA8, target.width x target.height, rows from top to bottom. 
+// transparentBackground: empty pixels are (0, 0, 0, 0) instead of backgroundColor.
+void launch_resolveColorbufferToImage(const RenderTarget& target, uint32_t* image, bool enableEDL, uint32_t backgroundColor, bool transparentBackground);
 
 // laspoints.cu
 void launch_drawLasPoints(

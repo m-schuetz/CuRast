@@ -112,6 +112,33 @@ float getEdlShadingFactor(uint64_t* colorbuffer, float depth, int x, int y, int 
 }
 
 
+// Displayed color of a pixel of c_target: background color for empty pixels, and EDL if enabled
+__device__ uint32_t resolvePixel(int x, int y, bool enableEDL, uint32_t backgroundColor){
+	int pixelID = toFramebufferIndex(x, y, c_target.width);
+
+	uint64_t pixel = c_target.colorbuffer[pixelID];
+	float depth = __uint_as_float(pixel >> 32);
+	uint32_t sampleColor = pixel & 0xffffffff;
+
+	float edl = 1.0f;
+
+	if(enableEDL){
+		edl = getEdlShadingFactor(c_target.colorbuffer, depth, x, y, 1);
+	}
+
+	if(isinf(depth)) sampleColor = backgroundColor;
+
+	float shade = edl;
+
+	uint8_t* rgba = (uint8_t*)&sampleColor;
+	rgba[0] = shade * float(rgba[0]);
+	rgba[1] = shade * float(rgba[1]);
+	rgba[2] = shade * float(rgba[2]);
+	rgba[3] = 255;
+
+	return sampleColor;
+}
+
 extern "C" __global__
 void kernel_resolve_colorbuffer_to_opengl_2D(
 	cudaSurfaceObject_t gl_desktop,
@@ -142,29 +169,7 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 			if(x >= source.width) return uint32_t(0);
 			if(y >= source.height) return uint32_t(0);
 
-			int pixelID = toFramebufferIndex(x, y, source.width);
-
-			uint64_t pixel = c_target.colorbuffer[pixelID];
-			float depth = __uint_as_float(pixel >> 32);
-			uint32_t sampleColor = pixel & 0xffffffff;
-
-			float edl = 1.0f;
-
-			if(enableEDL){
-				edl = getEdlShadingFactor(c_target.colorbuffer, depth, x, y, 1);
-			}
-
-			if(isinf(depth)) sampleColor = backgroundColor;
-
-			float shade = edl;
-
-			uint8_t* rgba = (uint8_t*)&sampleColor;
-			rgba[0] = shade * float(rgba[0]);
-			rgba[1] = shade * float(rgba[1]);
-			rgba[2] = shade * float(rgba[2]);
-			rgba[3] = 255;
-
-			return sampleColor;
+			return resolvePixel(x, y, enableEDL, backgroundColor);
 		};
 
 		uint32_t color = sample(x, y);
@@ -270,6 +275,28 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 	}
 }
 
+// Writes the displayed colors of c_target into an RGBA8 image of the same size, 
+// with rows from top to bottom like the image on screen, e.g. to save it as a file.
+// With transparentBackground, empty pixels are (0, 0, 0, 0) instead of the background color.
+extern "C" __global__
+void kernel_resolveColorbufferToImage(
+	uint32_t* image,
+	bool enableEDL,
+	uint32_t backgroundColor,
+	bool transparentBackground
+) {
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+	if(x >= c_target.width) return;
+	if(y >= c_target.height) return;
+
+	float depth = __uint_as_float(c_target.colorbuffer[toFramebufferIndex(x, y, c_target.width)] >> 32);
+	bool transparent = transparentBackground && isinf(depth);
+
+	image[x + c_target.width * (c_target.height - 1 - y)] = transparent ? 0 : resolvePixel(x, y, enableEDL, backgroundColor);
+}
+
 // ------------------------------------------------------------------------------------------------
 // Host
 // ------------------------------------------------------------------------------------------------
@@ -277,7 +304,8 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 static bool registered = 
 	registerKernel("resolve.cu", "kernel_dummy", (const void*)kernel_dummy) &&
 	registerKernel("resolve.cu", "kernel_clearFramebuffer", (const void*)kernel_clearFramebuffer) &&
-	registerKernel("resolve.cu", "kernel_resolve_colorbuffer_to_opengl_2D", (const void*)kernel_resolve_colorbuffer_to_opengl_2D);
+	registerKernel("resolve.cu", "kernel_resolve_colorbuffer_to_opengl_2D", (const void*)kernel_resolve_colorbuffer_to_opengl_2D) &&
+	registerKernel("resolve.cu", "kernel_resolveColorbufferToImage", (const void*)kernel_resolveColorbufferToImage);
 
 void launch_dummy(uint32_t* data){
 	kernel_dummy<<<1, 256>>>(data);
@@ -314,4 +342,18 @@ void launch_resolveColorbufferToSurface(
 		surface, width, height, mouseX, mouseY, enableEDL, showInset, backgroundColor);
 	checkKernelLaunch("kernel_resolve_colorbuffer_to_opengl_2D");
 	Timer::recordDuration("kernel_resolve_colorbuffer_to_opengl_2D", start, Timer::recordCudaTimestamp());
+}
+
+void launch_resolveColorbufferToImage(const RenderTarget& target, uint32_t* image, bool enableEDL, uint32_t backgroundColor, bool transparentBackground){
+	cudaMemcpyToSymbolAsync(c_target, &target, sizeof(RenderTarget));
+
+	dim3 blockSize = {8, 8, 1};
+	dim3 gridSize = {
+		(uint32_t(target.width)  + blockSize.x - 1) / blockSize.x,
+		(uint32_t(target.height) + blockSize.y - 1) / blockSize.y,
+		1
+	};
+
+	kernel_resolveColorbufferToImage<<<gridSize, blockSize>>>(image, enableEDL, backgroundColor, transparentBackground);
+	checkKernelLaunch("kernel_resolveColorbufferToImage");
 }

@@ -11,6 +11,7 @@
 #include "scene/PotreeFileNode.h"
 #include "scene/ClusteredMeshNode.h"
 #include "kernels/kernels.h"
+#include "stb/stb_image_write.h"
 
 using namespace std;
 
@@ -819,6 +820,172 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 	}
 }
 
+// The background color as RGBA8, for resolving the colorbuffer
+u32 getBackgroundColor(){
+	u32 backgroundColor = 0;
+	uint8_t* bgRgba = (uint8_t*)&backgroundColor;
+	bgRgba[0] = clamp(CuRastSettings::background.x * 256.0f, 0.0f, 255.0f);
+	bgRgba[1] = clamp(CuRastSettings::background.y * 256.0f, 0.0f, 255.0f);
+	bgRgba[2] = clamp(CuRastSettings::background.z * 256.0f, 0.0f, 255.0f);
+
+	return backgroundColor;
+}
+
+// Name of the first loaded dataset, e.g. for file names: the file name without extension, or the folder name.
+// Empty if there is none.
+string getFirstDatasetName(Scene* scene){
+	string name = "";
+
+	auto nameOf = [](string path, bool isFolder){
+		fs::path p = path;
+		if(!p.has_filename()) p = p.parent_path(); // trailing slash
+
+		return isFolder ? p.filename().string() : p.stem().string();
+	};
+
+	scene->root->traverse([&](SceneNode* node){
+		if(!name.empty()) return;
+
+		if(auto las = dynamic_cast<LasfileNode*>(node)) name = nameOf(las->file, false);
+		if(auto potree = dynamic_cast<PotreeFileNode*>(node)) name = nameOf(potree->dir, true);
+		if(auto mesh = dynamic_cast<ClusteredMeshNode*>(node)) name = nameOf(mesh->dir, true);
+	});
+
+	return name;
+}
+
+// Colors of depth images, from minimum to maximum depth (ColorBrewer's "Spectral")
+constexpr u8 DEPTH_GRADIENT[][3] = {
+	{158,   1,  66}, {213,  62,  79}, {244, 109,  67}, {253, 174,  97}, {254, 224, 139}, {255, 255, 191},
+	{230, 245, 152}, {171, 221, 164}, {102, 194, 165}, { 50, 136, 189}, { 94,  79, 162},
+};
+
+// Linear interpolation of DEPTH_GRADIENT, t from 0 to 1
+u32 depthGradient(float t){
+	constexpr int numColors = sizeof(DEPTH_GRADIENT) / sizeof(DEPTH_GRADIENT[0]);
+
+	float position = std::clamp(t, 0.0f, 1.0f) * float(numColors - 1);
+	int index = std::min(int(position), numColors - 2);
+	float fraction = position - float(index);
+
+	u32 color = 0xff000000;
+	for(int channel = 0; channel < 3; channel++){
+		float a = DEPTH_GRADIENT[index][channel];
+		float b = DEPTH_GRADIENT[index + 1][channel];
+		color |= u32(a + (b - a) * fraction + 0.5f) << (8 * channel);
+	}
+
+	return color;
+}
+
+// "Capture TD" (toolbar): Renders the current view once more at 1920x1080, and at 1/2, 1/4 and 1/8 of that, 
+// independent of the window size. Each resolution is rendered on its own, e.g. with the LODs for that resolution. 
+// For each resolution, saves
+// - td/<dataset>_<n>_color_<width>x<height>.png: the colors as displayed, but without EDL and GUI, and with a transparent background.
+// - td/<dataset>_<n>_depth_<width>x<height>.png: view-space depth as colors of DEPTH_GRADIENT, from its first color at the 
+//   image's minimum depth to its last color at the maximum depth. Transparent background.
+// - td/<dataset>_<n>_depth_<width>x<height>.bin: view-space depth as 32 bit floats, without any header. Rows from top to bottom,
+//   like the images. Background pixels are +infinity.
+// <dataset> is the name of the first loaded dataset, see getFirstDatasetName(). <n> is the first number without a 
+// capture of that dataset yet. The td folder is relative to the working directory.
+void captureTd(Scene* scene, View view){
+	constexpr int fullWidth = 1920;
+	constexpr int fullHeight = 1080;
+
+	static CudaBuffer* framebuffer = MemoryManager::allocBuffer(8 * fullWidth * fullHeight, "td capture framebuffer");
+	static u32* gpu_image = (u32*)MemoryManager::alloc(4 * fullWidth * fullHeight, "td capture image");
+
+	// the frame's kernels may still use buffers that this pass reuses, e.g. the lists of visible clusters
+	cudaDeviceSynchronize();
+
+	fs::create_directories("td");
+
+	int number = 0;
+	string datasetName = getFirstDatasetName(scene);
+	string prefix = datasetName.empty() ? "td/" : "td/" + datasetName + "_";
+	while(fs::exists(format("{}{:04}_color_{}x{}.png", prefix, number, fullWidth, fullHeight))) number++;
+
+	// keep these passes out of the overlay and the timings
+	auto debugValueList = Runtime::debugValueList;
+	bool measureTimings = Runtime::measureTimings;
+	bool timerEnabled = Timer::enabled;
+	Runtime::measureTimings = false;
+	Timer::enabled = false;
+
+	// same camera, but with the aspect ratio of the capture
+	shared_ptr<Camera> camera = VKRenderer::camera;
+	view.proj = dmat4(Camera::createProjectionMatrix(float(camera->near_), float(glm::pi<double>() * camera->fovy / 180.0), float(fullWidth) / float(fullHeight)));
+
+	for(int divisor : {1, 2, 4, 8}){
+		int width = fullWidth / divisor;
+		int height = fullHeight / divisor;
+
+		RenderTarget target;
+		target.colorbuffer = (u64*)framebuffer->ptr;
+		target.width = width;
+		target.height = height;
+		target.proj = view.proj;
+
+		launch_clearFramebuffer(target.colorbuffer, width * height, 0xff000000, Infinity);
+		drawLasPoints(scene, view, target);
+		drawPotreeFiles(scene, view, target);
+		drawClusteredMeshes(scene, view, target);
+		launch_resolveColorbufferToImage(target, gpu_image, false, getBackgroundColor(), true);
+
+		vector<u32> color(width * height);
+		vector<u64> pixels(width * height);
+		cudaMemcpy(color.data(), gpu_image, byteSizeOf(color), cudaMemcpyDeviceToHost);
+		cudaMemcpy(pixels.data(), target.colorbuffer, byteSizeOf(pixels), cudaMemcpyDeviceToHost);
+
+		// depth is in the upper 32 bits of each pixel. Rows from top to bottom, like the color image.
+		vector<float> depth(width * height);
+		float minDepth = Infinity;
+		float maxDepth = -Infinity;
+		for(int y = 0; y < height; y++)
+		for(int x = 0; x < width; x++){
+			u64 pixel = pixels[x + width * (height - 1 - y)];
+			float pixelDepth = __builtin_bit_cast(float, u32(pixel >> 32));
+			depth[x + width * y] = pixelDepth;
+
+			if(!std::isinf(pixelDepth)){
+				minDepth = std::min(minDepth, pixelDepth);
+				maxDepth = std::max(maxDepth, pixelDepth);
+			}
+		}
+
+		// RGBA. The image's depth range becomes the gradient, the background is transparent.
+		vector<u32> depthColors(width * height);
+		float range = maxDepth > minDepth ? maxDepth - minDepth : 0.0f;
+		for(int i = 0; i < width * height; i++){
+			bool background = std::isinf(depth[i]);
+			float normalized = range > 0.0f ? (depth[i] - minDepth) / range : 0.0f;
+			depthColors[i] = background ? 0 : depthGradient(normalized);
+		}
+
+		string colorPath = format("{}{:04}_color_{}x{}.png", prefix, number, width, height);
+		string depthPath = format("{}{:04}_depth_{}x{}.png", prefix, number, width, height);
+		string depthBinPath = format("{}{:04}_depth_{}x{}.bin", prefix, number, width, height);
+
+		std::ofstream depthBin(depthBinPath, std::ios::binary);
+		depthBin.write((const char*)depth.data(), byteSizeOf(depth));
+		depthBin.close();
+
+		bool success = stbi_write_png(colorPath.c_str(), width, height, 4, color.data(), width * 4)
+		            && stbi_write_png(depthPath.c_str(), width, height, 4, depthColors.data(), width * 4)
+		            && depthBin.good();
+
+		if(success){
+			println("saved {}, {} (depth {:.3f} to {:.3f}) and {}", fs::absolute(colorPath).string(), depthPath, minDepth, maxDepth, depthBinPath);
+		}else{
+			println("ERROR: failed to write {}, {} or {}", colorPath, depthPath, depthBinPath);
+		}
+	}
+
+	Runtime::debugValueList = debugValueList;
+	Runtime::measureTimings = measureTimings;
+	Timer::enabled = timerEnabled;
+}
+
 void CuRast::draw(Scene* scene, vector<View> views){
 
 	View view = views[0]; // We discarded support for multiple views for now.
@@ -863,11 +1030,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		int viewWidth = view.framebuffer->width;
 		int viewHeight = view.framebuffer->height;
 
-		u32 backgroundColor = 0;
-		uint8_t* bgRgba = (uint8_t*)&backgroundColor;
-		bgRgba[0] = clamp(CuRastSettings::background.x * 256.0f, 0.0f, 255.0f);
-		bgRgba[1] = clamp(CuRastSettings::background.y * 256.0f, 0.0f, 255.0f);
-		bgRgba[2] = clamp(CuRastSettings::background.z * 256.0f, 0.0f, 255.0f);
+		u32 backgroundColor = getBackgroundColor();
 
 		launch_resolveColorbufferToSurface(
 			target, mappings.surfaces[0], 
@@ -876,6 +1039,11 @@ void CuRast::draw(Scene* scene, vector<View> views){
 	}
 
 	unmapCudaVk(mappings);
+
+	if(requestTdCapture){
+		captureTd(scene, view);
+		requestTdCapture = false;
+	}
 }
 
 void initialize(){
