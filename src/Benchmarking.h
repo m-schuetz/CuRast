@@ -49,6 +49,12 @@ struct Benchmarking{
 		return scenario->path.contains("_optimized");
 	}
 
+	// GCC 13 has a bug with designated initializers + default member initializers
+	// causing build failures. Use empty vector for HIP builds; benchmark scenarios
+	// can be added at runtime if needed.
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__) || (__GNUC__ == 13)
+	static inline vector<Scenario> scenarios = {};
+#else
 	static inline vector<Scenario> scenarios = {
 		Scenario{
 			.path      = "DATASETPATH/sponza-png_by_Ludicon.glb",
@@ -340,6 +346,7 @@ struct Benchmarking{
 			},
 		},
 	};
+#endif  // !USE_HIP && !__HIP_PLATFORM_AMD__ && __GNUC__ != 13
 
 };
 

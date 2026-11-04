@@ -1,19 +1,27 @@
 
 #pragma once
 
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_cooperative_groups.h>
+#else
 #include <cooperative_groups.h>
+#endif
+
+#include <cstdint>  // Use standard fixed-width types
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
 
 namespace cg = cooperative_groups;
 
 #define FALSE 0
 #define TRUE 1
 
-typedef unsigned int uint32_t;
-typedef int int32_t;
-// typedef char int8_t;
-typedef unsigned char uint8_t;
-typedef unsigned long long uint64_t;
-typedef long long int64_t;
+using std::uint32_t;
+using std::int32_t;
+using std::uint8_t;
+using std::uint64_t;
+using std::int64_t;
 
 constexpr uint32_t MAX_STRING_LENGTH = 1'000;
 
@@ -194,11 +202,15 @@ void process(int size, Function&& f){
 
 __device__
 inline uint64_t nanotime(){
-
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+	// HIP doesn't have globaltimer; use wall_clock64 as a cycle counter proxy
+	// wall_clock64 reads from the GPU shader clock register
+	return __builtin_amdgcn_s_memrealtime();
+#else
 	uint64_t nanotime;
 	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(nanotime));
-
 	return nanotime;
+#endif
 }
 
 
@@ -229,3 +241,6 @@ __device__ __forceinline__ float atomicMaxFloat(float * addr, float value) {
 
 	return old;
 }
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <print>
+#include "compat_print.h"
 #include <mutex>
 #include <vector>
 
@@ -9,7 +9,7 @@
 #include <vulkan/vulkan_win32.h>
 #endif
 
-#include "cuda.h"
+#include "cuda_to_hip.h"
 #include "unsuck.hpp"
 #include "VKRenderer.h"
 #include "VkExt.h"
@@ -76,7 +76,7 @@ struct VulkanCudaSharedMemory {
 		// then free Vulkan memory.
 		for (auto& chunk : chunks) {
 			if (chunk.cuHandle) {
-				cuMemUnmap(cptr + chunk.offset, chunk.size);
+				cuMemUnmap(HIP_DEVPTR_ADD(cptr, chunk.offset), chunk.size);
 				cuMemRelease(chunk.cuHandle);
 			}
 			if (chunk.vkMemory != VK_NULL_HANDLE)
@@ -195,7 +195,7 @@ struct VulkanCudaSharedMemory {
 		// ----------------------------------------------------------------
 		while (comitted < requested_size) {
 			uint64_t diff             = requested_size - comitted;
-			uint64_t stepSize         = min(diff, 1'000'000'000llu);
+			uint64_t stepSize         = std::min<uint64_t>(diff, 1000000000ull);
 			uint64_t currentRequested = comitted + stepSize;
 			uint64_t padded           = roundUp(currentRequested, granularity);
 			if (padded <= comitted) break;
@@ -241,7 +241,7 @@ struct VulkanCudaSharedMemory {
 			VkResult vkRes = vkAllocateMemory(VKRenderer::device, &allocInfo, nullptr, &vkMemory);
 			if (vkRes != VK_SUCCESS) {
 				println("VulkanCudaSharedMemory::commit: vkAllocateMemory failed ({})", int(vkRes));
-				println("{}", stacktrace::current());
+				std::cerr << to_string(stacktrace::current()) << std::endl;
 				exit(26245762354);
 			}
 
@@ -274,7 +274,7 @@ struct VulkanCudaSharedMemory {
 			VkResult vkRes = vkGetMemoryWin32HandleKHR(VKRenderer::device, &getHandleInfo, &win32Handle);
 			if (vkRes != VK_SUCCESS) {
 				println("VulkanCudaSharedMemory::commit: vkGetMemoryWin32HandleKHR failed ({})", int(vkRes));
-				println("{}", stacktrace::current());
+				std::cerr << to_string(stacktrace::current()) << std::endl;
 				exit(26245762355);
 			}
 
@@ -292,7 +292,7 @@ struct VulkanCudaSharedMemory {
 			VkResult vkRes = vkGetMemoryFdKHR(VKRenderer::device, &getFdInfo, &fd);
 			if (vkRes != VK_SUCCESS) {
 				println("VulkanCudaSharedMemory::commit: vkGetMemoryFdKHR failed ({})", int(vkRes));
-				println("{}", stacktrace::current());
+				std::cerr << to_string(stacktrace::current()) << std::endl;
 				exit(26245762355);
 			}
 
@@ -305,7 +305,7 @@ struct VulkanCudaSharedMemory {
 			chunk.cuHandle = cuHandle;
 
 			cuCtxSynchronize();
-			cuRes = cuMemMap(cptr + chunk.offset, chunk.size, 0, cuHandle, 0);
+			cuRes = cuMemMap(HIP_DEVPTR_ADD(cptr, chunk.offset), chunk.size, 0, cuHandle, 0);
 			cuCtxSynchronize();
 			CURuntime::assertCudaSuccess(cuRes);
 		}
@@ -317,7 +317,7 @@ struct VulkanCudaSharedMemory {
 		accessDesc.flags         = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
 
 		cuCtxSynchronize();
-		CUresult cuRes = cuMemSetAccess(cptr + phaseStartOffset,
+		CUresult cuRes = cuMemSetAccess(HIP_DEVPTR_ADD(cptr, phaseStartOffset),
 		                                comitted - phaseStartOffset,
 		                                &accessDesc, 1);
 		cuCtxSynchronize();
@@ -359,17 +359,17 @@ struct VulkanCudaSharedMemory {
 
 		if(!validRange){
 			println("ERROR: Attempted to memcpy to unallocated or uncomitted range.");
-			println("    cptr:          {:15L}", cptr);
-			println("    comitted:      {:15L}", comitted);
-			println("    target offset: {:15L}", offset);
-			println("    source size:   {:15L}", size);
+			println("    cptr:          {:15}", cptr);
+			println("    comitted:      {:15}", comitted);
+			println("    target offset: {:15}", offset);
+			println("    source size:   {:15}", size);
 
-			println("{}", trace);
+			std::cerr << to_string(trace) << std::endl;
 			__debugbreak();
 			exit(652345345);
 		}
 
-		CUresult result = cuMemcpyHtoD(cptr + offset, source, size);
+		CUresult result = cuMemcpyHtoD(HIP_DEVPTR_ADD(cptr, offset), source, size);
 		CURuntime::assertCudaSuccess(result);
 	}
 };

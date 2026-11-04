@@ -1,5 +1,16 @@
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+// hipCUB mirrors the CUB device-wide interface, so the call sites below stay in
+// the CUB spelling on both backends.
+// Only the radix sort is needed. The hipcub.hpp umbrella header additionally
+// pulls in device_for.hpp, which requires a C++23 <mdspan> implementation that
+// libstdc++ 13 does not ship.
+#include <hipcub/device/device_radix_sort.hpp>
+namespace cub = hipcub;
+#include "cuda_to_hip.h"
+#else
 #include <cub/cub.cuh>
 #include <cuda_runtime.h>
+#endif
 #include <cstdint>
 
 static void*  s_sortTempStorage      = nullptr;

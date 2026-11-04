@@ -1,4 +1,7 @@
 #pragma once
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
 
 constexpr int64_t JPEG_NUM_DECODED_MCU_CAPACITY = 700'072;
 constexpr int64_t JPEG_BYTES_PER_DECODED_MCU = 16 * 16 * 4;
@@ -27,3 +30,6 @@ void unpack_mcuidx_textureidx_miplevel(uint32_t packed, uint32_t* mcu, uint32_t*
 	*texID    = (packed >>  4) & 0xff;
 	*mipLevel = (packed >>  0) & 0b1111;
 }
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif

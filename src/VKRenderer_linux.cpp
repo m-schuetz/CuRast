@@ -4,7 +4,7 @@
 #include <string>
 #include <sstream>
 #include <functional>
-#include <print>
+#include "compat_print.h"
 #include <cstdint>
 
 // todo: dnd via x11 or wayland - probably somewhat tedious, maybe just wait for glfw pr?

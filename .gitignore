@@ -1,4 +1,5 @@
 build/
+bench_render.png
 libs/openvr/samples
 libs/openvr_newer
 tools/sort_points/bin/

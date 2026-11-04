@@ -4,7 +4,7 @@
 #include <queue>
 #include <string>
 
-#include "cuda.h"
+#include "cuda_to_hip.h"
 #include <vulkan/vulkan.h>
 
 

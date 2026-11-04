@@ -1,15 +1,25 @@
 #define CUB_DISABLE_BF16_SUPPORT
 
 // === required by GLM ===
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "../cuda_to_hip.h"
+// Make GLM detect "CUDA" compiler to add __device__ __host__ qualifiers
+#ifndef __CUDACC__
+#define __CUDACC__
+#endif
+#define GLM_FORCE_PURE  // Disable x86 SIMD intrinsics
+#else
 #define GLM_FORCE_CUDA
+#include <cooperative_groups.h>
+#endif
 #define GLM_FORCE_NO_CTOR_INIT
+#ifndef CUDA_VERSION
 #define CUDA_VERSION 12000
+#endif
 namespace std {
 	using size_t = ::size_t;
 };
 // =======================
-
-#include <cooperative_groups.h>
 
 #include "./glm/glm/glm.hpp"
 #include "./glm/glm/gtc/matrix_transform.hpp"

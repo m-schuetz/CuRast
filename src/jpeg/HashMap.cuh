@@ -1,4 +1,7 @@
 #pragma once
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
 
 
 // hash map for 64bit elements comprising a 32bit key and a 32bit value
@@ -16,7 +19,7 @@ struct HashMap{
 	constexpr static int MAX_ATTEMPTS = 10;
 
 	// only define/compile functions for device, ignore for host
-	#if defined(__CUDA_ARCH__ )
+	#if defined(__CUDA_ARCH__) || defined(__HIPCC_RTC__)
 
 	// Murmur originates from here: https://github.com/aappleby/smhasher
 	// 
@@ -50,7 +53,9 @@ struct HashMap{
 
 		for(int i = 0; i < MAX_ATTEMPTS; i++){
 			int probeIndex = (hashIndex + i) % capacity;
-			uint64_t old = atomicCAS(&entries[probeIndex], EMPTYENTRY, element);
+			// HIP atomicCAS takes unsigned long long*; uint64_t is unsigned long on Linux
+			uint64_t old = atomicCAS(reinterpret_cast<unsigned long long*>(&entries[probeIndex]),
+			                         (unsigned long long)EMPTYENTRY, (unsigned long long)element);
 
 			if(old == EMPTYENTRY){
 				*location = probeIndex;
@@ -119,3 +124,6 @@ struct HashMap{
 	#endif
 
 };
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif

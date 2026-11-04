@@ -5,15 +5,15 @@
 #include <stacktrace>
 #include <set>
 #include <filesystem>
-#include <print>
 #include <format>
 #include <algorithm>
 #include <execution>
 #include <memory>
 
+#include "unsuck.hpp"  // includes <print> polyfill
+
 #include "./glm/glm/glm.hpp"
 #include "./MappedFile.h"
- #include "unsuck.hpp"
  #include "json/json.hpp"
 
 namespace fs = std::filesystem;
@@ -108,7 +108,7 @@ void writeGltf(
 	uint64_t offset_index   = offset_uv + uvSize;
 	uint64_t offset_normal  = offset_index + indexSize;
 
-	uint64_t binarySize = roundUp(posSize + colorSize + uvSize + indexSize + normalSize, 4llu);
+	uint64_t binarySize = roundUp<uint64_t>(posSize + colorSize + uvSize + indexSize + normalSize, 4);
 	vector<uint8_t> binary(binarySize);
 	memcpy(binary.data() + offset_pos   ,   positions, posSize);
 	memcpy(binary.data() + offset_color ,   colors,    colorSize);
@@ -610,7 +610,7 @@ void convert(string path, string gltfPath){
 
 	auto mappedFile = Mapping::mapFile(path);
 
-	string strProbableHeader((const char*)mappedFile->data, min(fs::file_size(path), 10'000llu));
+	string strProbableHeader((const char*)mappedFile->data, std::min<size_t>(fs::file_size(path), 10'000));
 	size_t pos_headerToken = strProbableHeader.find("end_header");
 	if(pos_headerToken == string::npos){
 		println("could not find end of header in ply file");

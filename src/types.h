@@ -1,6 +1,8 @@
 #pragma once
 
-
+// The fixed-width types below are not implicitly available in every translation
+// unit; hiprtc, for instance, does not predeclare them.
+#include <cstdint>
 
 using i64 =  int64_t;
 using u64 = uint64_t;

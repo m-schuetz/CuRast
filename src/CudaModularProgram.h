@@ -2,7 +2,7 @@
 
 #include <string>
 #include <unordered_map>
-#include <print>
+#include "compat_print.h"
 #include <stacktrace>
 
 #include "unsuck.hpp"
@@ -543,7 +543,7 @@ struct CudaModularProgram{
 			printf("error %d, %s \n", int(res_launch), str);
 			println("{} - {}", __FILE__, __LINE__);
 			println("failed to launch kernel \"{}\". gridSize: {} x {}", kernelName, gridSizeX, gridSizeY);
-			println("{}", stacktrace::current());
+			std::cerr << to_string(stacktrace::current()) << std::endl;
 
 			exit(42415);
 		}

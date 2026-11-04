@@ -1,17 +1,27 @@
 #define CUB_DISABLE_BF16_SUPPORT
 
 // === required by GLM ===
+#if defined(USE_HIP) || defined(__HIP_PLATFORM_AMD__)
+#include "../cuda_to_hip.h"
+// Make GLM detect "CUDA" compiler to add __device__ __host__ qualifiers
+#ifndef __CUDACC__
+#define __CUDACC__
+#endif
+#define GLM_FORCE_PURE  // Disable x86 SIMD intrinsics
+#else
 #define GLM_FORCE_CUDA
+// #include <curand_kernel.h>
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
+#endif
 #define GLM_FORCE_NO_CTOR_INIT
+#ifndef CUDA_VERSION
 #define CUDA_VERSION 12000
+#endif
 namespace std {
 	using size_t = ::size_t;
 };
 // =======================
-
-// #include <curand_kernel.h>
-#include <cooperative_groups.h>
-#include <cooperative_groups/memcpy_async.h>
 
 #include "./libs/glm/glm/glm.hpp"
 #include "./libs/glm/glm/gtc/matrix_transform.hpp"
@@ -30,7 +40,9 @@ using glm::ivec2;
 using glm::i8vec4;
 using glm::vec4;
 
-
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute push (__attribute__((device)), apply_to=function)
+#endif
 
 vec4 getVertex(const CMesh& mesh, u32 vertexIndex){
 
@@ -290,6 +302,10 @@ void binning(
 }
 
 
+#if defined(__HIPCC_RTC__)
+#pragma clang attribute pop
+#endif
+
 extern "C" __global__
 void kernel_stage1_binning(
 	RasterArgs args,
@@ -297,6 +313,30 @@ void kernel_stage1_binning(
 	u64* queueKeyValues,
 	u32* queueSize
 ){
+#if defined(USE_HIP)
+	auto block = cg::this_thread_block();
+
+	// The counters, the queue size and dbg_fragcount are zeroed by the CPU
+	// before this kernel is launched (see drawTrianglesTranslucent), so no
+	// grid.sync() is needed and the kernel can be launched non-cooperatively.
+
+	// Initialize block state
+	__shared__ int sh_blockBatchIndex;
+	__shared__ int sh_blockLocalBatchIndex;
+	__shared__ int sh_meshIndex;
+	// HIP doesn't support __shared__ vars with constructors; use raw storage
+	__shared__ alignas(CMesh) char sh_mesh_storage[sizeof(CMesh)];
+	CMesh& sh_mesh = *reinterpret_cast<CMesh*>(sh_mesh_storage);
+
+	if (block.thread_rank() == 0){
+		sh_blockBatchIndex = 0;
+		sh_blockLocalBatchIndex = 0;
+		sh_meshIndex = 0;
+		sh_mesh = args.meshes[0];
+	}
+
+	block.sync();
+#else
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 	
@@ -326,6 +366,7 @@ void kernel_stage1_binning(
 	}
 
 	grid.sync();
+#endif
 	
 	
 
@@ -469,7 +510,12 @@ void kernel_stage4_blend(
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 	
+#if defined(USE_HIP)
+	// HIP's grid_group has no block_rank(); the launch grid is one-dimensional.
+	u32 tileID = blockIdx.x;
+#else
 	u32 tileID = grid.block_rank();
+#endif
 	
 	u32 tiles_x = (args.target.width + TILE_SIZE_TRANSLUCENT - 1) / TILE_SIZE_TRANSLUCENT;
 	u32 tiles_y = (args.target.height + TILE_SIZE_TRANSLUCENT - 1) / TILE_SIZE_TRANSLUCENT;

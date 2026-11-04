@@ -1,10 +1,11 @@
 #pragma once
 
-#include <print>
+#include "compat_print.h"
 #include <mutex>
 #include <stacktrace>
 
-#include "cuda.h"
+#include "cuda_to_hip.h"
+
 #include "unsuck.hpp"
 #include "CURuntime.h"
 
@@ -113,7 +114,7 @@ struct CudaVirtualMemory{
 			// TODO: reserve new virtual range and remap
 			println("physically comitting beyond initial virtual range not yet implemented.");
 			println("TODO: reserve new virtual range and remap");
-			println("{}", stacktrace::current());
+			std::cerr << to_string(stacktrace::current()) << std::endl;
 			exit(6235266);
 		}
 
@@ -134,7 +135,7 @@ struct CudaVirtualMemory{
 		CURuntime::assertCudaSuccess(result);
 
 		// and map the physical memory
-		result = cuMemMap(cptr + comitted, required_additional_size, 0, allocHandle, 0); 
+		result = cuMemMap(HIP_DEVPTR_ADD(cptr, comitted), required_additional_size, 0, allocHandle, 0);
 		CURuntime::assertCudaSuccess(result);
 
 		// make the new memory accessible
@@ -142,7 +143,14 @@ struct CudaVirtualMemory{
 		accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
 		accessDesc.location.id = cuDevice;
 		accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-		result = cuMemSetAccess(cptr + comitted, required_additional_size, &accessDesc, 1);
+#if defined(USE_HIP)
+		// ROCm: hipMemSetAccess on a sub-range at a non-zero offset of the
+		// reservation can return hipErrorInvalidValue; setting access over the
+		// whole committed range from the base address works reliably.
+		result = cuMemSetAccess(cptr, comitted + required_additional_size, &accessDesc, 1);
+#else
+		result = cuMemSetAccess(HIP_DEVPTR_ADD(cptr, comitted), required_additional_size, &accessDesc, 1);
+#endif
 		CURuntime::assertCudaSuccess(result);
 
 		comitted += required_additional_size;
@@ -158,22 +166,22 @@ struct CudaVirtualMemory{
 
 		if(!validRange){
 			println("ERROR: Attempted to memcpy to unallocated or uncomitted range.");
-			println("    cptr:          {:15L}", cptr);
-			println("    comitted:      {:15L}", comitted);
-			println("    target offset: {:15L}", offset);
-			println("    source size:   {:15L}", size);
+			println("    cptr:          {:15}", cptr);
+			println("    comitted:      {:15}", comitted);
+			println("    target offset: {:15}", offset);
+			println("    source size:   {:15}", size);
 
-			println("{}", trace);
+			std::cerr << to_string(trace) << std::endl;
 			__debugbreak();
 			exit(652345345);
 		}
 
-		CUresult result = cuMemcpyHtoD(cptr + offset, source, size);
+		CUresult result = cuMemcpyHtoD(HIP_DEVPTR_ADD(cptr, offset), source, size);
 		CURuntime::assertCudaSuccess(result, trace);
 
 		// if(result != CUDA_SUCCESS){
 		// 	println("cuMemcpyHtoD failed with error code {}", int(result));
-		// 	println("{}", trace);
+		// 	std::cerr << to_string(trace) << std::endl;
 		// 	__debugbreak();
 		// 	exit(6125234);
 		// }

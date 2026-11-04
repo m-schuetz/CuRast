@@ -265,7 +265,7 @@ shared_ptr<UnbufferedFile> UnbufferedFile::open(string path){
 	if (hFile == INVALID_HANDLE_VALUE) {
 		println("ERROR: failed to CreateFileA");
 		println("path:  {}", path);;
-		println("{}", stacktrace::current());
+		std::cerr << to_string(stacktrace::current()) << std::endl;
 		exit(6362345);
 	}
 
@@ -301,7 +301,7 @@ void UnbufferedFile::read(uint64_t start, uint64_t size, void* target){
 				CloseHandle(ov.hEvent);
 				SetLastError(err);
 				printLastError();
-				println("{}", stacktrace::current());
+				std::cerr << to_string(stacktrace::current()) << std::endl;
 				__debugbreak();
 				exit(72463623476);
 			}
@@ -316,7 +316,7 @@ void UnbufferedFile::read(uint64_t start, uint64_t size, void* target){
 		if (!ok) {
 			SetLastError(err);
 			printLastError();
-			println("{}", stacktrace::current());
+			std::cerr << to_string(stacktrace::current()) << std::endl;
 			exit(8457346564);
 		}
 
@@ -348,7 +348,7 @@ void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* 
 		println("path:  {}", path);
 		println("start: {}", start);
 		println("size:  {}", size);
-		println("{}", stacktrace::current());
+		std::cerr << to_string(stacktrace::current()) << std::endl;
 		exit(6362345);
 	}
 
@@ -375,7 +375,7 @@ void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* 
 		} else {
 			// error
 			println("ERROR");
-			println("{}", stacktrace::current());
+			std::cerr << to_string(stacktrace::current()) << std::endl;
 			exit(74353);
 		}
 	}
@@ -582,7 +582,7 @@ double getCpuUsage(){
 }
 
 CpuData getCpuData() {
-	
+
 	if (!initialized) {
 		init();
 	}
@@ -594,5 +594,134 @@ CpuData getCpuData() {
 	return data;
 }
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <linux/fs.h>
+
+uint64_t getPhysicalSectorSize(string path) {
+	// Get the underlying device's sector size via ioctl
+	// For most modern SSDs this is 4096, for HDDs it might be 512
+	struct stat st;
+	if (stat(path.c_str(), &st) < 0) {
+		return 4096; // Default fallback
+	}
+
+	// Try to open the block device for the filesystem
+	// This is a simplification; for accurate results we'd need to find the device
+	// For now, return a safe default that works for most modern storage
+	return 4096;
+}
+
+shared_ptr<UnbufferedFile> UnbufferedFile::open(string path) {
+	shared_ptr<UnbufferedFile> file = make_shared<UnbufferedFile>();
+	file->path = path;
+
+	// O_DIRECT bypasses the OS page cache, similar to FILE_FLAG_NO_BUFFERING on Windows
+	int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
+	if (fd < 0) {
+		// O_DIRECT may fail on some filesystems; fall back to regular read with fadvise
+		fd = ::open(path.c_str(), O_RDONLY);
+		if (fd < 0) {
+			println("ERROR: failed to open file");
+			println("path:  {}", path);
+			exit(6362345);
+		}
+	}
+
+	file->sectorSize = getPhysicalSectorSize(path);
+	file->handle = reinterpret_cast<void*>(static_cast<intptr_t>(fd));
+
+	return file;
+}
+
+void UnbufferedFile::read(uint64_t start, uint64_t size, void* target) {
+	int fd = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+
+	// Use pread for positioned reads
+	uint64_t remaining = size;
+	uint64_t offset = start;
+	uint8_t* dst = reinterpret_cast<uint8_t*>(target);
+
+	while (remaining > 0) {
+		ssize_t bytesRead = pread(fd, dst, remaining, offset);
+		if (bytesRead < 0) {
+			println("ERROR: pread failed");
+			exit(72463623476);
+		}
+		if (bytesRead == 0) {
+			// EOF reached before expected
+			break;
+		}
+
+		offset += bytesRead;
+		dst += bytesRead;
+		remaining -= bytesRead;
+	}
+}
+
+void UnbufferedFile::close() {
+	int fd = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+	if (fd >= 0) {
+		::close(fd);
+	}
+	handle = nullptr;
+}
+
+void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* target) {
+	int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
+	if (fd < 0) {
+		// Fall back to regular read
+		fd = ::open(path.c_str(), O_RDONLY);
+		if (fd < 0) {
+			println("ERROR: failed to open file");
+			println("path:  {}", path);
+			println("start: {}", start);
+			println("size:  {}", size);
+			exit(6362345);
+		}
+		// Advise kernel to not cache this data
+		posix_fadvise(fd, start, size, POSIX_FADV_NOREUSE);
+	}
+
+	uint64_t remaining = size;
+	uint64_t offset = start;
+	uint8_t* dst = reinterpret_cast<uint8_t*>(target);
+
+	while (remaining > 0) {
+		ssize_t bytesRead = pread(fd, dst, remaining, offset);
+		if (bytesRead < 0) {
+			println("ERROR: pread failed");
+			::close(fd);
+			exit(74353);
+		}
+		if (bytesRead == 0) break;
+
+		offset += bytesRead;
+		dst += bytesRead;
+		remaining -= bytesRead;
+	}
+
+	::close(fd);
+}
+
+void toClipboard(string str) {
+	// X11/Wayland clipboard support would require additional dependencies
+	// For now, print to stdout as a fallback
+	println("Clipboard (not implemented on Linux): {}", str);
+}
+
+void hideConsole() {
+	// No-op on Linux (no console to hide in typical usage)
+}
+
+void printLastError() {
+	if (errno != 0) {
+		println("Encountered an Error. errno={} msg={}", errno, strerror(errno));
+	} else {
+		println("no errors");
+	}
+}
 
 #endif
