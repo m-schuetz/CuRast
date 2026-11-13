@@ -63,8 +63,10 @@ void initScene() {
 	// string file = "/run/media/mschuetz/Lightning/resources/pointclouds/iconem/Meroe_NorthNecropolis_684M.las_converted";
 	//string file = "/run/media/mschuetz/Paper/resources/potree/retz";
 	// string file = "/run/media/mschuetz/Lightning/resources/pointclouds/CA13_converted";
-	// shared_ptr<PotreeFileNode> node = make_shared<PotreeFileNode>(file, "potree");
-	// scene.root->children.push_back(node);
+	// string file = "/run/media/mschuetz/Rock/swisssurface3d_chunks_converted";
+	string file = "/run/media/mschuetz/Lightning/resources/pointclouds/Florence/florence_google_tiles_2025";
+	shared_ptr<PotreeFileNode> node = make_shared<PotreeFileNode>(file, "potree");
+	scene.root->children.push_back(node);
 
 	// PotreeAttribute* position = node->findAttribute("position");
 	// dvec3 tightMin = {position->min[0], position->min[1], position->min[2]};
@@ -78,9 +80,9 @@ void initScene() {
 	// clustered LOD mesh, created with tools/clodbuilder
 	// string file = "/home/mschuetz/dev/workspaces/CuRast/resources/hakone";
 	// shared_ptr<ClusteredMeshNode> node = make_shared<ClusteredMeshNode>(file, "hakone");
-	string file = "/run/media/mschuetz/Lightning/resources/meshes/odm_wietrznia_clustered";
-	shared_ptr<ClusteredMeshNode> node = make_shared<ClusteredMeshNode>(file, "odm_wietrznia");
-	scene.root->children.push_back(node);
+	// string file = "/run/media/mschuetz/Lightning/resources/meshes/odm_wietrznia_clustered";
+	// shared_ptr<ClusteredMeshNode> node = make_shared<ClusteredMeshNode>(file, "odm_wietrznia");
+	// scene.root->children.push_back(node);
 
 	Runtime::controls->target = (node->aabb.min + node->aabb.max) * 0.5f;
 	Runtime::controls->radius = 0.8 * length(node->aabb.max - node->aabb.min);
