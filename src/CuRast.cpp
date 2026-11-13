@@ -3,6 +3,7 @@
 #include <queue>
 #include <atomic>
 #include <optional>
+#include <deque>
 
 #include "CuRast.h"
 #include "VKRenderer.h"
@@ -344,6 +345,7 @@ int executeDirectStorageReads(const vector<DirectStorageRead>& reads){
 struct PotreeNodes{
 	PotreeNode* nodes = nullptr;  // in VRAM
 	u64 numNodes = 0;
+	u64 numBytes = 0;             // size of the nodes' points in octree.bin
 	bool directStorage = false;   // whether the nodes' points were read into VRAM, or are in the memory-mapped octree.bin
 };
 
@@ -484,6 +486,7 @@ PotreeNodes selectPotreeNodes(Scene* scene, View view, const RenderTarget& targe
 	static vector<PotreeNode> visibleNodes;
 	visibleNodes.clear();
 	u64 numVisiblePoints = 0;
+	u64 numVisibleBytes = 0;
 
 	// direct storage: reads of the visible nodes, and the number of bytes they occupy in directStorageBuffer
 	static vector<DirectStorageRead> reads;
@@ -523,6 +526,7 @@ PotreeNodes selectPotreeNodes(Scene* scene, View view, const RenderTarget& targe
 		}
 
 		numVisiblePoints += node.numPoints;
+		numVisibleBytes += node.byteSize;
 
 		visibleNode.numPoints       = node.numPoints;
 		visibleNode.offset_color    = state.offset_color >= 0 ? state.offset_color : ~0ull;
@@ -640,7 +644,7 @@ PotreeNodes selectPotreeNodes(Scene* scene, View view, const RenderTarget& targe
 	dvlist.push_back({"potree nodes", format("{:L}", visibleNodes.size())});
 	dvlist.push_back({"potree points", format("{:L}", numVisiblePoints)});
 
-	return {nodes, visibleNodes.size(), directStorage};
+	return {nodes, visibleNodes.size(), numVisibleBytes, directStorage};
 }
 
 void drawPotreeNodes(const PotreeNodes& potree, const RenderTarget& target, PointPass pass){
@@ -688,17 +692,92 @@ u64 drawLasPoints(Scene* scene, View view, const RenderTarget& target, PointPass
 CudaBuffer* pointDepthbuffer = nullptr;
 CudaBuffer* pointAccumbuffer = nullptr;
 
+// How much the point kernel reads from memory-mapped octree.bin files, and how fast, for the overlay. 
+// Keeps the bytes and the kernel's GPU duration of the last 60 frames. The durations are measured with CUDA events and 
+// read in the next frame, when the GPU has finished the frame.
+// The bytes are the size of the rendered points in octree.bin. The kernel only uses position and rgb of each point, but 
+// the points are contiguous, so their other attributes are fetched as well, i.e., the GPU reads entire nodes.
+struct MappedPointThroughput{
+	struct Frame{
+		double bytes;
+		double milliseconds;
+	};
+
+	static constexpr int historySize = 60;
+	std::deque<Frame> history;
+
+	// the current frame's kernel launches
+	vector<cudaEvent_t> startEvents;
+	vector<cudaEvent_t> endEvents;
+	int numLaunches = 0;
+	double bytes = 0.0;
+
+	// Adds the previous frame to the history, if it measured something
+	void beginFrame(){
+		if(numLaunches > 0){
+			double milliseconds = 0.0;
+			for(int i = 0; i < numLaunches; i++){
+				float duration = 0.0f;
+				cudaEventSynchronize(endEvents[i]);
+				cudaEventElapsedTime(&duration, startEvents[i], endEvents[i]);
+				milliseconds += duration;
+			}
+
+			history.push_back({bytes, milliseconds});
+			if(history.size() > historySize) history.pop_front();
+		}
+
+		numLaunches = 0;
+		bytes = 0.0;
+	}
+
+	// Measures the GPU duration of the kernels that <launch> launches, which read <launchBytes> from mapped files
+	void measure(double launchBytes, auto launch){
+		if(numLaunches == startEvents.size()){
+			cudaEvent_t start, end;
+			cudaEventCreate(&start);
+			cudaEventCreate(&end);
+			startEvents.push_back(start);
+			endEvents.push_back(end);
+		}
+
+		cudaEventRecord(startEvents[numLaunches]);
+		launch();
+		cudaEventRecord(endEvents[numLaunches]);
+
+		numLaunches++;
+		bytes += launchBytes;
+	}
+
+	// Throughput of the frames in the history, 0 if there are none
+	double bytesPerSecond(){
+		double totalBytes = 0.0;
+		double totalMilliseconds = 0.0;
+		for(const Frame& frame : history){
+			totalBytes += frame.bytes;
+			totalMilliseconds += frame.milliseconds;
+		}
+
+		return totalMilliseconds > 0.0 ? totalBytes / (totalMilliseconds / 1000.0) : 0.0;
+	}
+};
+MappedPointThroughput mappedPointThroughput;
+
 // Draws LasfileNodes and PotreeFileNodes into target.colorbuffer: 
 // - Default: the closest point of each pixel, with 64 bit atomicMin of depth and color (POINT_PASS_COLOR).
 // - High-quality shading (CuRastSettings::highQualityShading): the average color of the points close to the closest 
 //   point, see pointsHighQuality.cu. All point clouds are drawn with POINT_PASS_DEPTH into the point depthbuffer, and 
 //   then with POINT_PASS_ACCUMULATE into the accumulation buffer. kernel_normalizePoints then writes the averaged colors, 
 //   with the closest depth, into the colorbuffer.
-void drawPointClouds(Scene* scene, View view, const RenderTarget& target){
+// - throughput: if given, measures how much and how fast the kernel reads from memory-mapped octree.bin files, and adds 
+//   it to the overlay. Captures pass nullptr, so that they do not distort the window's measurements.
+void drawPointClouds(Scene* scene, View view, const RenderTarget& target, MappedPointThroughput* throughput = nullptr){
 
-	bool hasPointClouds = false;
+	bool hasPotree = false;
+	scene->forEach<PotreeFileNode>([&](PotreeFileNode* node){ hasPotree = true; });
+
+	bool hasPointClouds = hasPotree;
 	scene->forEach<LasfileNode>([&](LasfileNode* node){ hasPointClouds = true; });
-	scene->forEach<PotreeFileNode>([&](PotreeFileNode* node){ hasPointClouds = true; });
 
 	bool highQuality = CuRastSettings::highQualityShading && hasPointClouds;
 
@@ -726,10 +805,20 @@ void drawPointClouds(Scene* scene, View view, const RenderTarget& target){
 	// the same nodes in all passes
 	PotreeNodes potree = selectPotreeNodes(scene, view, pointTarget);
 
+	// adds the previous frame's measurement to the history
+	if(throughput != nullptr) throughput->beginFrame();
+
+	bool measureThroughput = throughput != nullptr && hasPotree && !potree.directStorage;
+
 	u64 numLasPoints = 0;
 	for(PointPass pass : passes){
 		numLasPoints = drawLasPoints(scene, view, pointTarget, pass);
-		drawPotreeNodes(potree, pointTarget, pass);
+
+		if(measureThroughput){
+			throughput->measure(double(potree.numBytes), [&](){ drawPotreeNodes(potree, pointTarget, pass); });
+		}else{
+			drawPotreeNodes(potree, pointTarget, pass);
+		}
 	}
 
 	if(highQuality){
@@ -738,6 +827,18 @@ void drawPointClouds(Scene* scene, View view, const RenderTarget& target){
 
 	auto& dvlist = Runtime::debugValueList;
 	dvlist.push_back({"num las points", format("{:L}", numLasPoints)});
+
+	if(measureThroughput){
+		// with high-quality shading, each pass reads the points
+		double megabytes = double(potree.numBytes) * double(passes.size()) / 1'000'000.0;
+		i64 megabytesPerSecond = i64(throughput->bytesPerSecond() / 1'000'000.0 + 0.5);
+
+		dvlist.push_back({"octree.bin", format("{:.1f} MB / frame", megabytes)});
+		dvlist.push_back({"octree.bin (GPU, last 60 frames)", format("{:L} MB/s", megabytesPerSecond)});
+	}else if(throughput != nullptr){
+		// e.g. after switching to direct storage, so that switching back does not mix in old frames
+		throughput->history.clear();
+	}
 }
 
 // What selectClustersBvh() visited and selected
@@ -1020,8 +1121,18 @@ void drawClusteredMeshes(Scene* scene, View view, RenderTarget& target){
 		dvlist.push_back({"triangles", format("{:L}", numVisibleTriangles)});
 		if(useBvh) dvlist.push_back({"visited BVH nodes", format("{:L}", numVisitedNodes)});
 
+		double totalBytes = 0.0;
+		bool totalAccurate = true;
 		for(const MappedFileTraffic& entry : traffic){
 			dvlist.push_back({entry.file, format("{:.1f} MB / frame ({})", entry.bytes / 1'000'000.0, entry.accurate ? "acc" : "est")});
+
+			totalBytes += entry.bytes;
+			totalAccurate = totalAccurate && entry.accurate;
+		}
+
+		// an estimate if any of the files is
+		if(!traffic.empty()){
+			dvlist.push_back({"total", format("{:.1f} MB / frame ({})", totalBytes / 1'000'000.0, totalAccurate ? "acc" : "est")});
 		}
 	}
 }
@@ -1320,7 +1431,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		launch_clearFramebuffer(target.colorbuffer, numPixels, clearColor, clearDepth);
 	}
 
-	drawPointClouds(scene, view, target);
+	drawPointClouds(scene, view, target, &mappedPointThroughput);
 	drawClusteredMeshes(scene, view, target);
 
 	int mouse_X = Runtime::mousePosition.x;
