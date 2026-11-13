@@ -38,7 +38,7 @@ struct CuRastSettings{
 	static inline float lodErrorThreshold = 1.0f;  // clustered LOD: max. projected simplification error, in pixels
 	static inline bool updateLod = true;           // false: keep the Potree nodes and clusters that were selected last
 	static inline int clusterColorMode = CLUSTER_COLOR_TEXTURE;
-	static inline int clusterRenderPath = CLUSTERS_VRAM;
+	static inline int clusterRenderPath = CLUSTERS_MEMORY_MAPPED;
 	static inline int clusterSelection = CLUSTER_SELECTION_BVH;
 
 	static inline vec4 background = {1.0f, 1.0f, 1.0f, 1.0f};

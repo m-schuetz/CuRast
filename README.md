@@ -67,8 +67,8 @@ Modify [initScene() in main.cpp](./src/main.cpp) to load point clouds or meshes 
 
   Point clouds (LAS and Potree) show the closest point of each pixel by default. With "HQ Shading" (toolbar, Appearance), each pixel shows the average color of the points up to 1% behind the closest point instead, using its own depth and accumulation buffers: A depth pass draws all points with 32 bit atomicMin, an accumulation pass sums up the colors and numbers of the points close to that depth with atomicAdd, and a normalization pass divides the sums by the numbers and writes the colors and depths into the visibility buffer. As the points are drawn twice, this takes about twice as long, and the memory-mapped path reads them twice.
 - `ClusteredMeshNode`: Loads a clustered LOD mesh created with [tools/clodbuilder](tools/clodbuilder/README.md). Each frame, the clusters whose simplification error is below a threshold in pixels (toolbar: LOD Error) are selected, either by traversing a BVH over the cluster groups on the CPU (default), or by testing every cluster on the GPU. The selected clusters are then rasterized with CUDA into a visibility buffer (depth and triangle ID per pixel), and each visible pixel is shaded afterwards. The toolbar switches where the clusters, vertices, triangles and the texture are read from:
+    - Memory-mapped (default): The GPU reads them directly from the memory-mapped files.
     - VRAM: Copied to VRAM on first use.
-    - Memory-mapped: The GPU reads them directly from the memory-mapped files.
 
   The texture is read from texture.dds, which `tools/clodbuilder/convert_textures.py` creates from the textures written by clodbuilder: BC7-compressed, and combined into an atlas if there are multiple textures (see [tools/clodbuilder](tools/clodbuilder/README.md)). It is decoded in the kernel, so that it can be read from VRAM or from the memory-mapped file.
 
