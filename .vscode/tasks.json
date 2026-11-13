@@ -14,6 +14,28 @@
 				"kind": "build",
 				"isDefault": true
 			}
+		},
+		{
+			// Release build in ./build, as described in the README
+			"label": "Build (Release)",
+			"type": "shell",
+			"command": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j",
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"group": "build",
+			"problemMatcher": ["$gcc"]
+		},
+		{
+			// Debug build in ./build-debug, used by the debug configurations in launch.json
+			"label": "Build (Debug)",
+			"type": "shell",
+			"command": "cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug && cmake --build build-debug -j",
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"group": "build",
+			"problemMatcher": ["$gcc"]
 		}
 	]
 }

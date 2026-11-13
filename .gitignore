@@ -1,4 +1,5 @@
 build/
+build-debug/
 libs/openvr/samples
 libs/openvr_newer
 tools/sort_points/bin/

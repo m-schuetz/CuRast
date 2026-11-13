@@ -1,0 +1,7 @@
+{
+	// Debuggers used by launch.json
+	"recommendations": [
+		"ms-vscode.cpptools",
+		"nvidia.nsight-vscode-edition"
+	]
+}
